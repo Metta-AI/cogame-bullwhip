@@ -1,4 +1,4 @@
-version     = "0.1.0"
+version     = "0.1.1"
 author      = "daveey"
 description = "Bullwhip: the MIT Beer Game for the Softmax Coworld platform. Four cogs, one supply chain, a demand that shifts once; a policy is just a prompt."
 license     = "MIT"

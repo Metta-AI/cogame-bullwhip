@@ -21,7 +21,7 @@
 ##                   for that seat: "basestock" / "1", or "mirror")
 
 import
-  std/[json, locks, os, sets, strutils, tables, times],
+  std/[json, locks, os, sets, strutils, tables, times, unicode],
   bitworld/runtime,
   curly,
   mummy,
@@ -436,8 +436,8 @@ proc websocketHandler(
         let payload = parseJson(message.data)
         if payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
-          if prompt.len > MaxPromptLen:
-            prompt = prompt[0 ..< MaxPromptLen]
+          if prompt.runeLen > MaxPromptLen:
+            prompt = prompt.runeSubStr(0, MaxPromptLen)
           let node = payload{"scripted"}
           let scripted =
             if node.isNil: skNone

@@ -1,4 +1,4 @@
-import std/[json, sets, unittest]
+import std/[json, sets, unicode, unittest]
 import bullwhip/sim
 
 proc fixtureConfig(weeks = 36, seed = 0, talk = true): GameConfig =
@@ -169,11 +169,15 @@ suite "orders":
     var sim = initSim(fixtureConfig(weeks = 8, seed = 1))
     var long = ""
     for index in 0 ..< 200:
-      long.add("x")
+      long.add("é")
     sim.applyOrder(0, 4, "  hello  ", "", false)
     sim.applyOrder(1, 4, long, "", false)
     check sim.says[sim.roleOf[0]] == "hello"
-    check sim.says[sim.roleOf[1]].len == MaxSayLen
+    check sim.says[sim.roleOf[1]].runeLen == MaxSayLen
+    check sim.says[sim.roleOf[1]].validateUtf8() == -1
+    ## The event log (and so the replay JSON) stays valid UTF-8.
+    for event in sim.events:
+      check event.say.validateUtf8() == -1
     var quiet = initSim(fixtureConfig(weeks = 8, seed = 1, talk = false))
     quiet.applyOrder(0, 4, "hello", "", false)
     check quiet.says[quiet.roleOf[0]] == ""

@@ -8,7 +8,7 @@
 ## Everything random is drawn from the seed at `initSim`, so a replay
 ## re-derives the episode from the recorded order events alone.
 
-import std/[json, random, strutils], types
+import std/[json, random, strutils, unicode], types
 
 export types
 
@@ -262,8 +262,10 @@ proc applyOrder*(sim: var Sim, seat, order: int, say, notes: string,
   var message = say.strip()
   if not sim.config.talk:
     message = ""
-  if message.len > MaxSayLen:
-    message = message[0 ..< MaxSayLen]
+  ## Cut on a rune boundary: a byte slice through a multi-byte character
+  ## would leave invalid UTF-8 in the replay and break its JSON.
+  if message.runeLen > MaxSayLen:
+    message = message.runeSubStr(0, MaxSayLen)
   sim.orders[stage] = order
   sim.says[stage] = message
   sim.history[^1].orders[stage] = order
