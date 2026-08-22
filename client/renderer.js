@@ -189,9 +189,10 @@
       drawBelt(ctx, L, b, scale);
     }
 
-    // Shipments in transit on each belt. Belt b (between column b and
-    // b+1) is the pipeline INTO stage b (b < 4) — slot [1] sits upstream,
-    // slot [0] downstream. Belt 4 feeds the factory from production.
+    // Shipments in transit. Belt b runs between columns b and b+1; the
+    // pipeline INTO stage s rides belt s+1 (slot [1] upstream, slot [0]
+    // downstream); belt 4 feeds the factory from production and belt 0
+    // carries the retailer's deliveries off to the customers.
     // During a week transition crates slide one slot downstream.
     for (var stage = 0; stage < 4; stage++) {
       var seat = seats[stageSeat[stage]];
@@ -279,7 +280,9 @@
 
   function drawShipment(ctx, L, stage, slot, units, eased, scale) {
     if (!units) return;
-    var belt = stage;   // the pipeline into stage `stage` is belt `stage`
+    // Column 0 is the customers, so the belt into stage `stage` (from the
+    // column upstream of it) is belt `stage + 1`.
+    var belt = stage + 1;
     var from = slot === 0 ? slotX(L, belt, 1) : L.columns[belt + 1].x;
     var to = slotX(L, belt, slot);
     var x = from + (to - from) * eased;
