@@ -1,0 +1,7 @@
+services:
+  bullwhip:
+    image: coworld-bullwhip:latest
+    platform: linux/amd64
+    build:
+      context: .
+      network: host

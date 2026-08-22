@@ -1,0 +1,353 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Metta-AI/coworld/main/src/coworld/coworld_manifest_schema.json",
+  "tags": [
+    "supply-chain",
+    "beer-game",
+    "mixed-motive",
+    "llm-driven",
+    "turn-based",
+    "four-player",
+    "economics",
+    "negotiation"
+  ],
+  "game": {
+    "name": "bullwhip",
+    "replay_viewer": {
+      "bundle": "static-replay-viewer"
+    },
+    "description": "Bullwhip: the MIT Beer Game for four LLM-piloted cogs. A four-stage supply chain - Retailer, Wholesaler, Distributor, Factory - where each seat is one stage (the seat-to-role assignment is drawn from the seed). Every week a stage receives an order from downstream, ships what it can from inventory (the rest becomes BACKLOG, owed until shipped), and places ONE order upstream. Orders take a week to be seen, shipments take two weeks to arrive, and the factory's orders are production requests with a two-week lead. Every stage pays $0.5 per unit held and $1.0 per unit of backlog every week; a seat's SCORE is minus its total cost. Customer demand is hidden from every seat and shifts once during the episode (spectators watch it week by week). A stage sees only its own numbers and, in the talk variant (default on), one short message a week from each neighbour - honest or not. Greedy ordering into a backlog creates the bullwhip: a demand step amplified stage by stage into an oscillation that comes back as everyone's excess inventory. The game is LLM-driven: every week the server sends each seat's policy prompt plus its role, full history table, this week's numbers, neighbours' messages and private notes to Claude (one parallel batch per week), so A POLICY IS JUST A PROMPT - build one by reusing the published player runnable and setting the PLAYER_PROMPT environment variable to your strategy. Two scripted baselines (base-stock and mirror) play any seat that registers as scripted - and every seat when no LLM credentials are available, so episodes always complete.",
+    "owner": "daveey@gmail.com",
+    "runnable": {
+      "type": "game",
+      "image": "{{BULLWHIP_IMAGE}}",
+      "run": [
+        "/bin/bullwhip"
+      ],
+      "env": {
+        "ANTHROPIC_API_KEY_URI": "secret://coworld/bullwhip/anthropic_api_key"
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-bullwhip/tree/main"
+    },
+    "config_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "players"
+      ],
+      "properties": {
+        "tokens": {
+          "description": "One connection token per player slot, indexed by slot.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "players": {
+          "description": "One player display-name object per seat, indexed by slot.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "num_agents": {
+          "description": "Seat count; injected by the commissioner. Bullwhip is a four-player game.",
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 4
+        },
+        "seed": {
+          "description": "Pins the seat-to-role assignment, the hidden demand script, and the seat aliases. Omit for a fresh random seed per episode.",
+          "type": "integer"
+        },
+        "weeks": {
+          "description": "Weeks of orders in the episode. Every seat orders every week; the chain resolves after the fourth order.",
+          "type": "integer",
+          "minimum": 4,
+          "maximum": 60,
+          "default": 36
+        },
+        "talk": {
+          "description": "Whether seats may send one short message a week to their two neighbours (non-binding free text).",
+          "type": "boolean",
+          "default": true
+        },
+        "episodeTimeoutSeconds": {
+          "description": "Wall-clock the game assumes the platform allows an episode when COWORLD_TIMEOUT_SECONDS is not in its environment; play stops between weeks at 60% of it so results and the replay always land.",
+          "type": "integer",
+          "minimum": 60,
+          "maximum": 6000,
+          "default": 1200
+        },
+        "turnDelayMs": {
+          "description": "Spectator pacing delay between weeks.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000,
+          "default": 400
+        },
+        "model": {
+          "description": "Claude model that drives every seat.",
+          "type": "string",
+          "default": "claude-sonnet-5"
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 64,
+          "maximum": 2000,
+          "default": 900
+        },
+        "llmTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 300,
+          "default": 60
+        },
+        "player_connect_timeout_seconds": {
+          "type": "number",
+          "minimum": 0,
+          "default": 180
+        }
+      }
+    },
+    "results_schema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "names",
+        "scores",
+        "costs",
+        "roles",
+        "weeks",
+        "maxWeeks",
+        "chainCost",
+        "reason"
+      ],
+      "properties": {
+        "names": {
+          "description": "Policy display names, indexed by slot. Seats play under anonymous cog aliases in-game; results attribute by policy name.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "string"
+          }
+        },
+        "scores": {
+          "description": "Minus the seat's total cost over the weeks played (higher is better).",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "number",
+            "maximum": 0
+          }
+        },
+        "costs": {
+          "description": "The seat's total holding + backlog cost in dollars.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "roles": {
+          "description": "The stage each seat ran: Retailer, Wholesaler, Distributor, or Factory.",
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "string"
+          }
+        },
+        "weeks": {
+          "description": "Weeks actually played (orders resolved).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxWeeks": {
+          "description": "The episode's week count after budget fitting.",
+          "type": "integer",
+          "minimum": 4
+        },
+        "chainCost": {
+          "description": "Sum of the four costs: the whole chain's bill.",
+          "type": "number",
+          "minimum": 0
+        },
+        "reason": {
+          "description": "How the episode ended: complete (all weeks played) or deadline (episode clock; scores use the weeks played).",
+          "type": "string"
+        }
+      }
+    },
+    "protocols": {
+      "player": {
+        "type": "text",
+        "value": "bullwhip.player.v1 - JSON text frames over the websocket named by COWORLD_PLAYER_WS_URL (already carrying ?slot=N&token=T). A Bullwhip policy is a prompt: the player container's only job is to deliver it; the game server makes every decision by sending that prompt plus the seat's role, history table, this week's numbers, neighbours' messages and private notes to Claude once a week. game->player frames: {\"type\":\"welcome\",\"protocol\":\"bullwhip.player.v1\",\"slot\":N,\"name\":str,\"role\":str,\"weeks\":int} on connect; {\"type\":\"state\",\"slot\":N,\"name\":str,\"seat\":{role,score,inventory,backlog,received,incoming,shipped,shipPipe,costWeek,costTotal,lastOrder},\"week\":int,\"weeks\":int,\"weeksPlayed\":int,\"started\":bool,\"done\":bool,\"reason\":str} after every event - redacted to the seat's own stage because the chain has hidden information (other stages' numbers and the demand script are not for the seats; decisions are server-side so nothing is lost); {\"type\":\"final\",\"done\":true,\"scores\":[...],\"costs\":[...],\"roles\":[...],\"names\":[...],\"weeks\":int,\"reason\":str} at episode end, after which the player should exit. player->game frames: {\"type\":\"prompt\",\"prompt\":str,\"scripted\":str} - the prompt (max 4000 chars) is the policy, sent right after connecting (and again after welcome); scripted \"basestock\" (or \"1\") plays the built-in base-stock baseline for that seat, \"mirror\" the pass-through baseline, \"\" means LLM-driven. The reference player reads PLAYER_PROMPT and PLAYER_SCRIPTED from its environment."
+      }
+    },
+    "docs": {
+      "readme": {
+        "type": "text",
+        "value": "Bullwhip is the MIT Beer Game for four LLM-piloted cogs: a Retailer, Wholesaler, Distributor and Factory (roles dealt from the seed) each run one stage of a supply chain for 36 weeks. Every week a stage receives an order from downstream, ships from inventory (the shortfall becomes backlog), and places one order upstream; orders take a week to be seen and shipments two weeks to arrive. Holding costs $0.5 a unit a week, backlog $1.0; a seat scores minus its total cost. Customer demand is hidden and steps up once. Seats may send one short, non-binding message a week to their neighbours. A policy is just a prompt: field one by reusing the published bullwhip-player runnable with the PLAYER_PROMPT environment variable set to your strategy. With no LLM credentials (or for seats that register scripted) the server plays a base-stock or mirror baseline so episodes always complete."
+      },
+      "rules": {
+        "type": "text",
+        "value": "# Bullwhip rules\n\n- Four seats, four stages: 0 Retailer, 1 Wholesaler, 2 Distributor, 3 Factory; the seat-to-stage assignment is a seeded permutation. Customers sit below the retailer; the factory's supplier is its own production line.\n- Week 0 is already observed: every stage holds 12, owes 0, and has 4 + 4 units on its two-week shipping belt.\n- Each week every seat places one order (0..500 units), simultaneously. When all four are in, the chain resolves, for every stage: the shipping pipeline shifts (what was one week out arrives); the factory's order enters its own pipeline two weeks out; arrivals join inventory; the incoming order is customer demand (retailer) or the order the downstream stage placed this week (one-week order delay); the stage ships min(inventory, backlog + incoming), the remainder becoming backlog; the shipment enters the downstream stage's pipeline two weeks out; cost for the week is 0.5 x inventory + 1.0 x backlog.\n- Customer demand is 4 a week until a seeded week (4..8), then a seeded level (7..12) for the rest of the episode. No seat ever sees the script; spectators see it week by week.\n- A seat's prompt carries its role, its whole history table (incoming, arrived, shipped, inventory, backlog, cost, order per week), this week's numbers, the messages its two neighbours sent last week (talk variant, default on; 120 characters, free text, non-binding), and its private notes (600 characters, fed back verbatim, recorded for spectators).\n- The episode runs `weeks` weeks (default 36, 4..60); the episode clock may end it early between weeks.\n\n## Scoring\n\nA seat's cost is its stage's total holding and backlog cost over the weeks played; `score = -cost`. Results also report the roles and the chain's total cost. Individual score, shared pain: the league ranks seats by mean episode score.\n\n## The meta\n\nEvery decision is made by Claude acting on a per-seat policy prompt. Prompts that keep a running count of what is on order (the supply line, including what a backlogged supplier still owes), forecast slowly, and never re-order a backlog that is already on its way tend to score; the built-in base-stock baseline does exactly that and is the partner a prompt has to beat, while the mirror baseline (order what you received) is the partner that never rebuilds. Talking honestly about forecasts helps the chain; lying about them is legal."
+      }
+    }
+  },
+  "player": [
+    {
+      "id": "bullwhip-player",
+      "name": "Bullwhip Prompt Player",
+      "type": "player",
+      "description": "The reference Bullwhip policy: delivers its PLAYER_PROMPT (or a default base-stock strategy in words) to the game and spectates until the final frame. Field your own policy by uploading this same image with a different PLAYER_PROMPT.",
+      "image": "{{BULLWHIP_IMAGE}}",
+      "run": [
+        "/bin/bullwhip-player"
+      ],
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-bullwhip/tree/main"
+    },
+    {
+      "id": "bullwhip-basestock",
+      "name": "Bullwhip Base-Stock Baseline",
+      "type": "player",
+      "description": "The scripted base-stock baseline as a fieldable policy: registers its seat as rule-based (a slow demand forecast, full supply-line accounting, gentle inventory correction) so the game server plays it deterministically, no LLM involved.",
+      "image": "{{BULLWHIP_IMAGE}}",
+      "run": [
+        "/bin/bullwhip-player"
+      ],
+      "env": {
+        "PLAYER_SCRIPTED": "basestock"
+      },
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-bullwhip/tree/main"
+    },
+    {
+      "id": "bullwhip-mirror",
+      "name": "Bullwhip Mirror Baseline",
+      "type": "player",
+      "description": "The scripted pass-through baseline: orders exactly what it received each week. Never amplifies on its own, never rebuilds a backlog either.",
+      "image": "{{BULLWHIP_IMAGE}}",
+      "run": [
+        "/bin/bullwhip-player"
+      ],
+      "env": {
+        "PLAYER_SCRIPTED": "mirror"
+      },
+      "resources": {
+        "requests": {
+          "cpu": "100m",
+          "memory": "64Mi"
+        },
+        "limits": {
+          "cpu": "1"
+        }
+      },
+      "source_url": "https://github.com/Metta-AI/cogame-bullwhip/tree/main"
+    }
+  ],
+  "variants": [
+    {
+      "id": "standard",
+      "name": "Standard game",
+      "description": "Four cogs, one chain, 36 weeks, talk on; demand steps once.",
+      "game_config": {
+        "players": [
+          {
+            "name": "Player1"
+          },
+          {
+            "name": "Player2"
+          },
+          {
+            "name": "Player3"
+          },
+          {
+            "name": "Player4"
+          }
+        ],
+        "num_agents": 4,
+        "weeks": 36,
+        "talk": true,
+        "turnDelayMs": 400,
+        "player_connect_timeout_seconds": 180
+      }
+    }
+  ],
+  "certification": {
+    "game_config": {
+      "players": [
+        {
+          "name": "Sprocket"
+        },
+        {
+          "name": "Gizmo"
+        },
+        {
+          "name": "Ratchet"
+        },
+        {
+          "name": "Widget"
+        }
+      ],
+      "num_agents": 4,
+      "seed": 7,
+      "weeks": 8,
+      "turnDelayMs": 0,
+      "player_connect_timeout_seconds": 180
+    },
+    "players": [
+      {
+        "player_id": "bullwhip-player"
+      },
+      {
+        "player_id": "bullwhip-basestock"
+      },
+      {
+        "player_id": "bullwhip-player"
+      },
+      {
+        "player_id": "bullwhip-mirror"
+      }
+    ]
+  }
+}
