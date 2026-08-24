@@ -103,7 +103,7 @@
           "default": 400
         },
         "model": {
-          "description": "Claude model that drives every seat.",
+          "description": "Claude model for the direct-Anthropic transport (ANTHROPIC_API_KEY). Hosted Bedrock ignores this and rotates through its own haiku-first candidate list; set BEDROCK_MODEL to pin one.",
           "type": "string",
           "default": "claude-sonnet-5"
         },
