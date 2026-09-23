@@ -230,7 +230,7 @@ proc historyTable(sim: Sim, stage: int): string =
       money(s.costWeek) & " | " & order)
   lines.join("\n")
 
-proc systemPrompt(sim: Sim, seat: int): string =
+proc systemPrompt*(sim: Sim, seat: int): string =
   let me = sim.seatName(seat)
   let stage = sim.roleOf[seat]
   let downstream =
