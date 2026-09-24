@@ -203,7 +203,7 @@
     "protocols": {
       "player": {
         "type": "text",
-        "value": "bullwhip.player.v2 - JSON text frames over COWORLD_PLAYER_WS_URL. The game sends welcome and redacted state frames, then one observation frame per week for an externally controlled seat: {\"type\":\"observation\",\"week\":N,\"observation\":{\"name\":str,\"role\":str,\"week\":N,\"weeks\":N,\"seat\":{inventory,backlog,received,incoming,shipped,shipPipe,costWeek,costTotal,lastOrder},\"history\":[own-stage records with order],\"heard\":[neighbour messages],\"notes\":str,\"talk\":bool,\"legal\":{orderMin,orderMax,sayMaxChars,notesMaxChars}}}. A player registers with {\"type\":\"register\",\"control\":\"external\"} and returns {\"type\":\"action\",\"week\":N,\"action\":{\"order\":N,\"say\":str,\"notes\":str}}. The game validates order 0..500 and message/notes limits, applies simultaneous actions, owns results and replay, and falls back to base-stock after the action deadline. The reference Jev and scripted players use this interface. Existing prompt policies can still send {\"type\":\"prompt\",\"prompt\":str,\"scripted\":str} for the server-side Claude/scripted adapter. No Jev model call or Jev-specific action path exists in the game server."
+        "value": "bullwhip.player.v2 - JSON text frames over COWORLD_PLAYER_WS_URL. The game sends welcome and redacted state frames, then one observation frame per week for an externally controlled seat: {\"type\":\"observation\",\"week\":N,\"observation\":{\"name\":str,\"role\":str,\"week\":N,\"weeks\":N,\"seat\":{inventory,backlog,received,incoming,shipped,shipPipe,costWeek,costTotal,lastOrder},\"history\":[own-stage records with order],\"heard\":[neighbour messages],\"notes\":str,\"talk\":bool,\"legal\":{orderMin,orderMax,sayMaxChars,notesMaxChars}}}. A player registers with {\"type\":\"register\",\"control\":\"external\"} and returns {\"type\":\"action\",\"week\":N,\"action\":{\"order\":N,\"say\":str,\"notes\":str}}. The game validates order 0..500 and message/notes limits, applies simultaneous actions, owns results and replay, and falls back to base-stock after the action deadline. Any external policy can use this interface. Existing prompt policies can still send {\"type\":\"prompt\",\"prompt\":str,\"scripted\":str} for the server-side Claude/scripted adapter."
       },
       "global": {
         "type": "text",
@@ -213,7 +213,7 @@
     "docs": {
       "readme": {
         "type": "text",
-        "value": "Bullwhip is the MIT Beer Game for four LLM-piloted cogs: a Retailer, Wholesaler, Distributor and Factory (roles dealt from the seed) each run one stage of a supply chain for 36 weeks. Every week a stage receives an order from downstream, ships from inventory (the shortfall becomes backlog), and places one order upstream; orders take a week to be seen and shipments two weeks to arrive. Holding costs $0.5 a unit a week, backlog $1.0; a seat scores minus its total cost. Customer demand is hidden and steps up once. Seats may send one short, non-binding message a week to their neighbours. A policy is a prompt, a Jev choice policy, or a scripted baseline. Field one with PLAYER_PROMPT, PLAYER_JEV=1, or PLAYER_SCRIPTED on the published bullwhip-player runnable. With no LLM credentials (or for seats that register scripted) the server plays a base-stock or mirror baseline so episodes always complete."
+        "value": "Bullwhip is the MIT Beer Game for four cogs: a Retailer, Wholesaler, Distributor and Factory (roles dealt from the seed) each run one stage of a supply chain for 36 weeks. Every week a stage receives an order from downstream, ships from inventory (the shortfall becomes backlog), and places one order upstream; orders take a week to be seen and shipments two weeks to arrive. Holding costs $0.5 a unit a week, backlog $1.0; a seat scores minus its total cost. Customer demand is hidden and steps up once. Seats may send one short, non-binding message a week to their neighbours. Policies receive their own seat observation and return validated orders. Legacy prompt and scripted adapters remain available. With no LLM credentials (or for seats that register scripted) the server plays a base-stock or mirror baseline so episodes always complete."
       },
       "pages": [
         {
@@ -232,7 +232,7 @@
       "id": "bullwhip-player",
       "name": "Bullwhip Prompt Player",
       "type": "player",
-      "description": "Reference Bullwhip player. PLAYER_JEV=1 runs Jev in the player container; PLAYER_SCRIPTED chooses an external scripted action; PLAYER_PROMPT retains the existing prompt adapter.",
+      "description": "Reference Bullwhip player with external action, scripted, and legacy prompt modes.",
       "image": "{{BULLWHIP_IMAGE}}",
       "run": [
         "/bin/bullwhip-player"
