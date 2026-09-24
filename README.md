@@ -17,13 +17,14 @@ back as everyone's excess inventory. In the talk variant (default on) each
 seat may send one short, non-binding message a week to its two neighbours —
 honest forecasts or otherwise.
 
-**The game is LLM-driven and a policy is just a prompt.** Every week the
-game server sends each seat's policy prompt, its role, its whole history
-table, this week's numbers, its neighbours' messages and its private notes
-to Claude — the four seats as one parallel batch, since their decisions are
-simultaneous — and Claude answers with the order (and a message, and new
-notes). Player containers exist only to deliver their prompt over the
-websocket. Two built-in **scripted baselines** — `basestock` (Sterman's
+**The game is LLM-driven and a policy is a prompt or a Jev choice policy.**
+Every week the game server sends each prompt policy's role, history, current
+numbers, neighbours' messages, notes and policy prompt to Claude. A policy
+with `PLAYER_JEV=1` sends that same observation to Jev System One, which
+ranks legal order quantities near the base-stock estimate. Jev policies do
+not send messages or maintain notes. Player containers deliver the policy
+selection over the websocket; the game server makes the decisions in one
+parallel batch per week. Two built-in **scripted baselines** — `basestock` (Sterman's
 anchor-and-adjust with full supply-line accounting) and `mirror` (order
 what you received) — play any seat that registers as scripted, and every
 seat when no LLM credentials are available, so episodes (and offline
@@ -78,9 +79,9 @@ nim c -d:release -o:bin/bullwhip src/bullwhip.nim
 nim c -d:release -o:bin/bullwhip-player src/bullwhip_player.nim
 nim c --hints:off -d:emscripten replay-viewer/bullwhip_replay.nim  # wasm viewer
 # A full local episode (game + four players, results and replay in tmp/):
-SCRIPTED=(basestock "" mirror "") bash tmp/run_e2e.sh tmp/config.json e2e
-# Export ANTHROPIC_API_KEY for real Claude play; omit for the scripted
-# baselines.
+bash tools/local_episode.sh basestock 7 8
+# With TYPESAFE_API_KEY in the environment, compare the same seed:
+bash tools/local_episode.sh jev 7 8
 ```
 
 Coworld packaging (from a metta checkout):
@@ -102,3 +103,10 @@ uv run coworld upload-policy <bullwhip image> --name my-bullwhip \
 
 Or field a scripted baseline: same image, `--env PLAYER_SCRIPTED=basestock`
 or `--env PLAYER_SCRIPTED=mirror`.
+
+To field a Jev policy, reuse the image with `--env PLAYER_JEV=1`. The game
+server uses the hosted Bedrock sidecar, `METTA_CAPTURE_URL` and
+`METTA_CAPTURE_KEY`, or `TYPESAFE_API_KEY` (in that order) for System One.
+Without a Jev transport, the seat plays the base-stock fallback. Each Jev
+reply must rank the exact offered choices with normalized probabilities;
+invalid replies are retried once, then fall back to base-stock.

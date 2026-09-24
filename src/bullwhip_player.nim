@@ -1,13 +1,13 @@
-## Bullwhip player: a policy is just a prompt.
+## Bullwhip player: a policy is a prompt, a Jev choice policy, or scripted.
 ##
 ## Connects to the game, delivers its prompt (from PLAYER_PROMPT, or a
 ## default Beer Game strategy), then idles until the final frame. All of the
-## actual decision making happens inside the game server, which sends this
-## seat's prompt to Claude every week.
+## actual decision making happens inside the game server.
 ##
 ## PLAYER_SCRIPTED=basestock (or 1) registers the seat as the built-in
 ## base-stock baseline instead; PLAYER_SCRIPTED=mirror as the pass-through
 ## baseline. The server plays those deterministically, no LLM.
+## PLAYER_JEV=1 asks the server to rank legal orders with Jev System One.
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <bullwhip-image> --name my-bullwhip \
@@ -40,9 +40,11 @@ when isMainModule:
   if prompt.len == 0:
     prompt = DefaultPrompt
   let scripted = getEnv("PLAYER_SCRIPTED").strip()
+  let jev = getEnv("PLAYER_JEV") == "1"
 
   proc promptFrame(): string =
-    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
+    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted,
+      "jev": jev}
 
   echo "bullwhip player: connecting to game"
   let socket = newWebSocket(url)

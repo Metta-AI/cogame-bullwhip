@@ -16,7 +16,8 @@
 ##                   {"type":"state",...} after every event (redacted to
 ##                   the seat's own stage: the chain has hidden information)
 ##                   {"type":"final","scores":[...],"costs":[...]}
-##   player -> game: {"type":"prompt","prompt":"...","scripted":"basestock"}
+##   player -> game: {"type":"prompt","prompt":"...",
+##                    "scripted":"basestock","jev":false}
 ##                   (max 4000 chars; scripted plays a built-in baseline
 ##                   for that seat: "basestock" / "1", or "mirror")
 
@@ -38,6 +39,7 @@ type
     config: GameConfig
     sim: Sim
     prompts: seq[string]
+    jev: seq[bool]
     scripted: seq[ScriptKind]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
@@ -264,6 +266,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var simCopy: Sim
       var seats: seq[int]
       var prompts: seq[string]
+      var jev: seq[bool]
       var scripted: seq[ScriptKind]
       withLock stateLock:
         if state.sim.done:
@@ -281,19 +284,19 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         seats = state.sim.pendingSeats()
         simCopy = state.sim
         prompts = state.prompts
+        jev = state.jev
         scripted = state.scripted
         echo "bullwhip: week ", state.sim.week, " of ", config.weeks,
           " at ", (epochTime() - gameStart).int, "s"
 
-      ## The slow part (Claude, one parallel batch for the week) runs
+      ## The model requests (one parallel batch for the week) run
       ## outside the lock on a snapshot; only this thread mutates the sim,
       ## so the snapshot cannot go stale.
-      let decisions = client.decideAll(simCopy, seats, prompts, scripted)
+      let decisions = client.decideAll(simCopy, seats, prompts, scripted, jev)
 
       withLock stateLock:
         for index, seat in seats:
           let decision = decisions[index]
-          let wasScripted = scripted[seat] != skNone or client.disabled
           echo "bullwhip: week ", state.sim.week, " ", state.sim.names[seat],
             " (", state.sim.roleName(seat), ") orders ", decision.order,
             (if decision.say.len > 0: " says \"" & decision.say & "\""
@@ -301,7 +304,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             " at ", (epochTime() - gameStart).int, "s"
           try:
             state.sim.applyOrder(seat, decision.order, decision.say,
-              decision.notes, wasScripted)
+              decision.notes, decision.scripted)
           except BullwhipError as error:
             echo "bullwhip: reply rejected (", error.msg,
               "); using scripted fallback"
@@ -446,6 +449,7 @@ proc websocketHandler(
             else: parseScriptKind(node.getStr())
           withLock stateLock:
             state.prompts[slot] = prompt
+            state.jev[slot] = payload{"jev"}.getBool()
             state.scripted[slot] = scripted
           echo "bullwhip: slot ", slot, " delivered a prompt (",
             prompt.len, " chars",
@@ -518,6 +522,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.config = config
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)
+  state.jev = newSeq[bool](config.players.len)
   state.scripted = newSeq[ScriptKind](config.players.len)
   runtimeConfigGlobal = runtimeConfig
 
