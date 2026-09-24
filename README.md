@@ -104,9 +104,18 @@ uv run coworld upload-policy <bullwhip image> --name my-bullwhip \
 Or field a scripted baseline: same image, `--env PLAYER_SCRIPTED=basestock`
 or `--env PLAYER_SCRIPTED=mirror`.
 
-To field a Jev policy, reuse the image with `--env PLAYER_JEV=1`. The game
+To field a Jev policy, reuse the image with `--use-bedrock --bedrock-model
+typesafe/jev-1.13 --secret-env PLAYER_JEV=1`. The game
 server uses the hosted Bedrock sidecar, `METTA_CAPTURE_URL` and
 `METTA_CAPTURE_KEY`, or `TYPESAFE_API_KEY` (in that order) for System One.
 Without a Jev transport, the seat plays the base-stock fallback. Each Jev
 reply must rank the exact offered choices with normalized probabilities;
 invalid replies are retried once, then fall back to base-stock.
+
+The relh-owned `bullwhip-jev-20260924:v1` policy ran privately on production
+Coworld 0.1.3 in `xreq_d926d421-d043-4969-9bc8-629f35d23d7f`. The eight-week
+episode seated Jev against three active base-stock v12 policies and capped
+combined player model spend at $0.05. All eight Jev calls returned HTTP 200;
+the replay marks eight model orders and no scripted fallback. Seat costs were
+54.0, 46.5, 49.5, and 50.5, with Jev in seat 0. This single game verifies the
+hosted path, not a cost or performance advantage. No ladder submission was made.
