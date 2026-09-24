@@ -5,7 +5,7 @@
 ## no partner worth beating.
 
 import std/[json, monotimes, strutils, times, unicode, unittest]
-import bullwhip/[llm, sim]
+import bullwhip/[llm, server, sim]
 
 proc fixture(seed: int, weeks = 36): GameConfig =
   result = defaultGameConfig()
@@ -84,8 +84,7 @@ suite "scripted baselines":
     var sim = initSim(config)
     let seats = sim.pendingSeats()
     let decisions = client.decideAll(sim, seats,
-      @["be bold", "", "", ""], @[skNone, skNone, skMirror, skNone],
-      @[false, false, false, false])
+      @["be bold", "", "", ""], @[skNone, skNone, skMirror, skNone])
     check decisions.len == Seats
     for index, seat in seats:
       let kind = if seat == 2: skMirror else: skBasestock
@@ -121,26 +120,6 @@ suite "scripted baselines":
     check parseScriptKind("mirror") == skMirror
     check parseScriptKind("") == skNone
 
-  test "Jev chooses a legal order from a validated probability set":
-    let sim = initSim(fixture(7, weeks = 8))
-    let seat = sim.pendingSeats()[0]
-    let criteria = sim.jevCriteria(seat)
-    check criteria.len > 1
-    var probabilities = newJObject()
-    for choice, description in criteria.pairs:
-      discard description
-      probabilities[choice] = %0.0
-    let expected = $scriptedAction(sim, seat, skBasestock).order
-    probabilities[expected] = %1.0
-    let response = %*{"answers": {"decision": {
-      "type": "choice", "choice": expected, "confidence": 0.9,
-      "probabilities": probabilities}}, "model": "test",
-      "usage": {"input_tokens": 10, "output_tokens": 5}}
-    check jevDecision(response, criteria).order == parseInt(expected)
-    probabilities[expected] = %0.5
-    expect BullwhipError:
-      discard jevDecision(response, criteria)
-
   test "prompts carry the seat's own table and nothing hidden":
     var sim = initSim(fixture(7, weeks = 8))
     for seat in sim.pendingSeats():
@@ -152,3 +131,20 @@ suite "scripted baselines":
     check "hello from " & $sim.seatOf[1] in text
     check ("hello from " & $sim.seatOf[2]) notin text
     check "YOUR HISTORY" in text
+
+  test "external policies receive only their seat's history and messages":
+    var sim = initSim(fixture(7, weeks = 8))
+    for seat in sim.pendingSeats():
+      sim.applyOrder(seat, 4, "hello from " & $seat,
+        "private note " & $seat, true)
+    let retailer = sim.seatOf[0]
+    let observation = observationJson(sim, retailer)
+    check observation["role"].getStr() == "Retailer"
+    check observation["history"].len > 0
+    check observation["notes"].getStr() == "private note " & $retailer
+    check observation["heard"].len == 1
+    check observation["heard"][0]["message"].getStr() ==
+      "hello from " & $sim.seatOf[1]
+    check not observation.hasKey("demand")
+    check not observation.hasKey("stages")
+    check observation["legal"]["orderMax"].getInt() == MaxOrder

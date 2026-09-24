@@ -17,18 +17,14 @@ back as everyone's excess inventory. In the talk variant (default on) each
 seat may send one short, non-binding message a week to its two neighbours —
 honest forecasts or otherwise.
 
-**The game is LLM-driven and a policy is a prompt or a Jev choice policy.**
-Every week the game server sends each prompt policy's role, history, current
-numbers, neighbours' messages, notes and policy prompt to Claude. A policy
-with `PLAYER_JEV=1` sends that same observation to Jev System One, which
-ranks legal order quantities near the base-stock estimate. Jev policies do
-not send messages or maintain notes. Player containers deliver the policy
-selection over the websocket; the game server makes the decisions in one
-parallel batch per week. Two built-in **scripted baselines** — `basestock` (Sterman's
-anchor-and-adjust with full supply-line accounting) and `mirror` (order
-what you received) — play any seat that registers as scripted, and every
-seat when no LLM credentials are available, so episodes (and offline
-certification) always complete.
+The game sends a redacted observation to each externally controlled player
+and accepts one action per week. Jev and the two bundled scripted baselines
+use this interface. `PLAYER_JEV=1` makes the player call System One and rank
+orders; the game only validates and applies the returned order. The
+`basestock` policy uses Sterman's anchor-and-adjust with full supply-line
+accounting; `mirror` orders what it received. Existing prompt policies keep
+their server-side Claude adapter so published policies continue to play.
+All paths use the same game rules, scoring, and replay.
 
 Seats play under **anonymous cog names** (Sprocket, Gizmo, …): policy
 display names never reach the agents' prompts, so nobody can meta-game
@@ -46,11 +42,10 @@ episode ends `complete` after `weeks` weeks (default 36, 4..60) or
 - `src/bullwhip/sim.nim` — pure rules: roles and demand from the seed, the
   weekly resolution, orders, messages, tallies, endings, replay derivation;
   shared by server, tests, and the wasm viewer
-- `src/bullwhip/llm.nim` — Claude client (one batch per week) + the
-  scripted baselines
+- `src/bullwhip/llm.nim` — existing prompt adapter and game fallback
 - `src/bullwhip/server.nim` — mummy HTTP/WS server (player, global, replay)
-- `src/bullwhip_player.nim` — the prompt-delivery player (`PLAYER_PROMPT` /
-  `PLAYER_SCRIPTED` env)
+- `src/bullwhip_player.nim` — the player observation/action loop
+- `src/bullwhip/policy.nim` — player-side Jev and scripted decisions
 - `client/` — shared canvas renderer + global/player/replay pages (the
   parley broadcast chrome around the conveyor and the seismograph)
 - `replay-viewer/` — static wasm replay viewer (`?replay=<url>`)
@@ -105,17 +100,17 @@ Or field a scripted baseline: same image, `--env PLAYER_SCRIPTED=basestock`
 or `--env PLAYER_SCRIPTED=mirror`.
 
 To field a Jev policy, reuse the image with `--use-bedrock --bedrock-model
-typesafe/jev-1.13 --secret-env PLAYER_JEV=1`. The game
-server uses the hosted Bedrock sidecar, `METTA_CAPTURE_URL` and
-`METTA_CAPTURE_KEY`, or `TYPESAFE_API_KEY` (in that order) for System One.
-Without a Jev transport, the seat plays the base-stock fallback. Each Jev
-reply must rank the exact offered choices with normalized probabilities;
-invalid replies are retried once, then fall back to base-stock.
+typesafe/jev-1.13 --secret-env PLAYER_JEV=1`. The **player container** uses
+its Bedrock sidecar, capture proxy, or TypeSafe key for System One. It sends
+only a legal order action to the game. The game uses base-stock if the player
+misses the action deadline. An invalid action is rejected by the game.
 
-The relh-owned `bullwhip-jev-20260924:v1` policy ran privately on production
+The earlier game-side `bullwhip-jev-20260924:v1` policy ran privately on production
 Coworld 0.1.3 in `xreq_d926d421-d043-4969-9bc8-629f35d23d7f`. The eight-week
 episode seated Jev against three active base-stock v12 policies and capped
 combined player model spend at $0.05. All eight Jev calls returned HTTP 200;
 the replay marks eight model orders and no scripted fallback. Seat costs were
 54.0, 46.5, 49.5, and 50.5, with Jev in seat 0. This single game verifies the
-hosted path, not a cost or performance advantage. No ladder submission was made.
+old hosted path, not this corrected player-side path or a performance
+advantage. No ladder submission was made. No new production game version or
+canary is part of the protocol rework.

@@ -46,7 +46,7 @@ for slot in 0 1 2 3; do
   fi
 done
 wait "$game"
-python3 - "$episode_dir" <<'PY'
+python3 - "$episode_dir" "$mode" <<'PY'
 import json
 import re
 import sys
@@ -54,9 +54,11 @@ from pathlib import Path
 path = Path(sys.argv[1])
 results = json.loads((path / 'results.json').read_text())
 replay = json.loads((path / 'episode.replay').read_text())
-log = (path / 'game.log').read_text()
+log = (path / 'player0.log').read_text()
 usage = [tuple(map(int, match)) for match in re.findall(
     r'input_tokens (\d+) output_tokens (\d+)', log)]
+if sys.argv[2] == 'jev' and len(usage) != results['weeks']:
+    raise SystemExit(f"expected {results['weeks']} player-side Jev calls; got {len(usage)}")
 print(json.dumps({
     'artifacts': str(path), 'weeks': results['weeks'],
     'seat0_cost': results['costs'][0], 'chain_cost': results['chainCost'],
