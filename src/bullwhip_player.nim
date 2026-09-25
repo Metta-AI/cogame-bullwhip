@@ -1,13 +1,11 @@
-## Bullwhip player: a policy is just a prompt.
+## Bullwhip player: Jev chooses actions from seat observations.
 ##
-## Connects to the game, delivers its prompt (from PLAYER_PROMPT, or a
-## default Beer Game strategy), then idles until the final frame. All of the
-## actual decision making happens inside the game server, which sends this
-## seat's prompt to Claude every week.
+## Connects to the game and acts on each redacted seat observation. The
+## operator prompt, Jev call, and scripted logic stay inside this policy.
 ##
-## PLAYER_SCRIPTED=basestock (or 1) registers the seat as the built-in
-## base-stock baseline instead; PLAYER_SCRIPTED=mirror as the pass-through
-## baseline. The server plays those deterministically, no LLM.
+## PLAYER_SCRIPTED=basestock (or 1) chooses the base-stock baseline;
+## PLAYER_SCRIPTED=mirror orders the incoming quantity.
+## PLAYER_JEV=1 runs Jev in this player container.
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <bullwhip-image> --name my-bullwhip \
@@ -15,6 +13,7 @@
 
 import
   std/[json, options, os, strutils],
+  bullwhip/policy,
   whisky
 
 const DefaultPrompt = """
@@ -36,18 +35,22 @@ when isMainModule:
   let url = getEnv("COWORLD_PLAYER_WS_URL")
   if url.len == 0:
     quit("COWORLD_PLAYER_WS_URL is not set", 1)
-  var prompt = getEnv("PLAYER_PROMPT")
-  if prompt.len == 0:
-    prompt = DefaultPrompt
   let scripted = getEnv("PLAYER_SCRIPTED").strip()
+  let jev = getEnv("PLAYER_JEV") == "1"
+  var prompt = getEnv("PLAYER_PROMPT")
+  if prompt.len == 0 and not jev:
+    prompt = DefaultPrompt
 
-  proc promptFrame(): string =
-    $ %*{"type": "prompt", "prompt": prompt, "scripted": scripted}
+  proc register(): string =
+    if jev or scripted.len > 0:
+      $ %*{"type": "register", "control": "external"}
+    else:
+      $ %*{"type": "prompt", "prompt": prompt, "scripted": ""}
 
   echo "bullwhip player: connecting to game"
   let socket = newWebSocket(url)
-  socket.send(promptFrame())
-  echo "bullwhip player: prompt delivered (", prompt.len, " chars",
+  socket.send(register())
+  echo "bullwhip player: registered (", prompt.len, " prompt chars",
     (if scripted.len > 0: ", scripted " & scripted else: ""), ")"
 
   while true:
@@ -58,8 +61,22 @@ when isMainModule:
     let message = received.get()
     if message.kind != TextMessage:
       continue
+    let payload = parseJson(message.data)
+    if (jev or scripted.len > 0) and
+        payload{"type"}.getStr() == "observation":
+      let observation = payload["observation"]
+      let action =
+        if scripted.len > 0:
+          let order =
+            if scripted == "mirror": observation["seat"]["incoming"].getInt()
+            else: baseStockOrder(observation)
+          %*{"order": order, "say": "", "notes": ""}
+        else:
+          %*{"order": chooseOrder(observation), "say": "", "notes": ""}
+      socket.send($ %*{"type": "action", "week": payload["week"],
+        "action": action})
+      continue
     try:
-      let payload = parseJson(message.data)
       case payload{"type"}.getStr()
       of "welcome":
         echo "bullwhip player: seated at slot ",
@@ -67,7 +84,7 @@ when isMainModule:
           " (", payload{"role"}.getStr(), ")"
         ## Re-deliver the prompt after the welcome, in case the first send
         ## raced the server's slot registration.
-        socket.send(promptFrame())
+        socket.send(register())
       of "final":
         echo "bullwhip player: final scores ", payload{"scores"}
         break

@@ -41,6 +41,7 @@ type
     order*: int
     say*: string
     notes*: string      ## "" when the reply carried none
+    scripted*: bool
 
   LlmTransport = enum
     ltNone, ltBedrock, ltAnthropic
@@ -197,6 +198,7 @@ proc mirrorOrder*(sim: Sim, stage: int): int =
 
 proc scriptedAction*(sim: Sim, seat: int, kind: ScriptKind): Decision =
   ## Rule-based baseline for `seat`. Always legal; never talks or notes.
+  result.scripted = true
   let stage = sim.roleOf[seat]
   case kind
   of skMirror: result.order = mirrorOrder(sim, stage)

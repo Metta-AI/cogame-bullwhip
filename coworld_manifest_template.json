@@ -15,7 +15,7 @@
     "replay_viewer": {
       "bundle": "static-replay-viewer"
     },
-    "description": "Bullwhip: the MIT Beer Game for four LLM-piloted cogs. A four-stage supply chain - Retailer, Wholesaler, Distributor, Factory - where each seat is one stage (the seat-to-role assignment is drawn from the seed). Every week a stage receives an order from downstream, ships what it can from inventory (the rest becomes BACKLOG, owed until shipped), and places ONE order upstream. Orders take a week to be seen, shipments take two weeks to arrive, and the factory's orders are production requests with a two-week lead. Every stage pays $0.5 per unit held and $1.0 per unit of backlog every week; a seat's SCORE is minus its total cost. Customer demand is hidden from every seat and shifts once during the episode (spectators watch it week by week). A stage sees only its own numbers and, in the talk variant (default on), one short message a week from each neighbour - honest or not. Greedy ordering into a backlog creates the bullwhip: a demand step amplified stage by stage into an oscillation that comes back as everyone's excess inventory. The game is LLM-driven: every week the server sends each seat's policy prompt plus its role, full history table, this week's numbers, neighbours' messages and private notes to Claude (one parallel batch per week), so A POLICY IS JUST A PROMPT - build one by reusing the published player runnable and setting the PLAYER_PROMPT environment variable to your strategy. Two scripted baselines (base-stock and mirror) play any seat that registers as scripted - and every seat when no LLM credentials are available, so episodes always complete.",
+    "description": "Bullwhip: the MIT Beer Game for four cogs. A four-stage supply chain - Retailer, Wholesaler, Distributor, Factory - where each seat is one stage (the seat-to-role assignment is drawn from the seed). Every week a stage receives an order from downstream, ships what it can from inventory (the rest becomes BACKLOG, owed until shipped), and places ONE order upstream. Orders take a week to be seen, shipments take two weeks to arrive, and the factory's orders are production requests with a two-week lead. Every stage pays $0.5 per unit held and $1.0 per unit of backlog every week; a seat's SCORE is minus its total cost. Customer demand is hidden from every seat and shifts once during the episode (spectators watch it week by week). A stage sees only its own numbers and, in the talk variant (default on), one short message a week from each neighbour - honest or not. Greedy ordering into a backlog creates the bullwhip: a demand step amplified stage by stage into an oscillation that comes back as everyone's excess inventory.",
     "owner": "daveey@gmail.com",
     "runnable": {
       "type": "game",
@@ -203,7 +203,7 @@
     "protocols": {
       "player": {
         "type": "text",
-        "value": "bullwhip.player.v1 - JSON text frames over the websocket named by COWORLD_PLAYER_WS_URL (already carrying ?slot=N&token=T). A Bullwhip policy is a prompt: the player container's only job is to deliver it; the game server makes every decision by sending that prompt plus the seat's role, history table, this week's numbers, neighbours' messages and private notes to Claude once a week. game->player frames: {\"type\":\"welcome\",\"protocol\":\"bullwhip.player.v1\",\"slot\":N,\"name\":str,\"role\":str,\"weeks\":int} on connect; {\"type\":\"state\",\"slot\":N,\"name\":str,\"seat\":{role,score,inventory,backlog,received,incoming,shipped,shipPipe,costWeek,costTotal,lastOrder},\"week\":int,\"weeks\":int,\"weeksPlayed\":int,\"started\":bool,\"done\":bool,\"reason\":str} after every event - redacted to the seat's own stage because the chain has hidden information (other stages' numbers and the demand script are not for the seats; decisions are server-side so nothing is lost); {\"type\":\"final\",\"done\":true,\"scores\":[...],\"costs\":[...],\"roles\":[...],\"names\":[...],\"weeks\":int,\"reason\":str} at episode end, after which the player should exit. player->game frames: {\"type\":\"prompt\",\"prompt\":str,\"scripted\":str} - the prompt (max 4000 chars) is the policy, sent right after connecting (and again after welcome); scripted \"basestock\" (or \"1\") plays the built-in base-stock baseline for that seat, \"mirror\" the pass-through baseline, \"\" means LLM-driven. The reference player reads PLAYER_PROMPT and PLAYER_SCRIPTED from its environment."
+        "value": "bullwhip.player.v2 - JSON text frames over COWORLD_PLAYER_WS_URL. The game sends welcome and redacted state frames, then one observation frame per week for an externally controlled seat: {\"type\":\"observation\",\"week\":N,\"observation\":{\"name\":str,\"role\":str,\"week\":N,\"weeks\":N,\"seat\":{inventory,backlog,received,incoming,shipped,shipPipe,costWeek,costTotal,lastOrder},\"history\":[own-stage records with order],\"heard\":[neighbour messages],\"notes\":str,\"talk\":bool,\"legal\":{orderMin,orderMax,sayMaxChars,notesMaxChars}}}. A player registers with {\"type\":\"register\",\"control\":\"external\"} and returns {\"type\":\"action\",\"week\":N,\"action\":{\"order\":N,\"say\":str,\"notes\":str}}. The game validates order 0..500 and message/notes limits, applies simultaneous actions, owns results and replay, and falls back to base-stock after the action deadline. Any external policy can use this interface. Existing prompt policies can still send {\"type\":\"prompt\",\"prompt\":str,\"scripted\":str} for the server-side Claude/scripted adapter."
       },
       "global": {
         "type": "text",
@@ -213,7 +213,7 @@
     "docs": {
       "readme": {
         "type": "text",
-        "value": "Bullwhip is the MIT Beer Game for four LLM-piloted cogs: a Retailer, Wholesaler, Distributor and Factory (roles dealt from the seed) each run one stage of a supply chain for 36 weeks. Every week a stage receives an order from downstream, ships from inventory (the shortfall becomes backlog), and places one order upstream; orders take a week to be seen and shipments two weeks to arrive. Holding costs $0.5 a unit a week, backlog $1.0; a seat scores minus its total cost. Customer demand is hidden and steps up once. Seats may send one short, non-binding message a week to their neighbours. A policy is just a prompt: field one by reusing the published bullwhip-player runnable with the PLAYER_PROMPT environment variable set to your strategy. With no LLM credentials (or for seats that register scripted) the server plays a base-stock or mirror baseline so episodes always complete."
+        "value": "Bullwhip is the MIT Beer Game for four cogs: a Retailer, Wholesaler, Distributor and Factory (roles dealt from the seed) each run one stage of a supply chain for 36 weeks. Every week a stage receives an order from downstream, ships from inventory (the shortfall becomes backlog), and places one order upstream; orders take a week to be seen and shipments two weeks to arrive. Holding costs $0.5 a unit a week, backlog $1.0; a seat scores minus its total cost. Customer demand is hidden and steps up once. Seats may send one short, non-binding message a week to their neighbours. Policies receive their own seat observation and return validated orders. Legacy prompt and scripted adapters remain available. With no LLM credentials (or for seats that register scripted) the server plays a base-stock or mirror baseline so episodes always complete."
       },
       "pages": [
         {
@@ -232,7 +232,7 @@
       "id": "bullwhip-player",
       "name": "Bullwhip Prompt Player",
       "type": "player",
-      "description": "The reference Bullwhip policy: delivers its PLAYER_PROMPT (or a default base-stock strategy in words) to the game and spectates until the final frame. Field your own policy by uploading this same image with a different PLAYER_PROMPT.",
+      "description": "Reference Bullwhip player with external action, scripted, and legacy prompt modes.",
       "image": "{{BULLWHIP_IMAGE}}",
       "run": [
         "/bin/bullwhip-player"
@@ -252,7 +252,7 @@
       "id": "bullwhip-basestock",
       "name": "Bullwhip Base-Stock Baseline",
       "type": "player",
-      "description": "The scripted base-stock baseline as a fieldable policy: registers its seat as rule-based (a slow demand forecast, full supply-line accounting, gentle inventory correction) so the game server plays it deterministically, no LLM involved.",
+      "description": "Scripted base-stock policy: consumes the seat observation and returns a legal order without a model call.",
       "image": "{{BULLWHIP_IMAGE}}",
       "run": [
         "/bin/bullwhip-player"

@@ -5,7 +5,7 @@
 ## no partner worth beating.
 
 import std/[json, monotimes, strutils, times, unicode, unittest]
-import bullwhip/[llm, sim]
+import bullwhip/[llm, server, sim]
 
 proc fixture(seed: int, weeks = 36): GameConfig =
   result = defaultGameConfig()
@@ -131,3 +131,20 @@ suite "scripted baselines":
     check "hello from " & $sim.seatOf[1] in text
     check ("hello from " & $sim.seatOf[2]) notin text
     check "YOUR HISTORY" in text
+
+  test "external policies receive only their seat's history and messages":
+    var sim = initSim(fixture(7, weeks = 8))
+    for seat in sim.pendingSeats():
+      sim.applyOrder(seat, 4, "hello from " & $seat,
+        "private note " & $seat, true)
+    let retailer = sim.seatOf[0]
+    let observation = observationJson(sim, retailer)
+    check observation["role"].getStr() == "Retailer"
+    check observation["history"].len > 0
+    check observation["notes"].getStr() == "private note " & $retailer
+    check observation["heard"].len == 1
+    check observation["heard"][0]["message"].getStr() ==
+      "hello from " & $sim.seatOf[1]
+    check not observation.hasKey("demand")
+    check not observation.hasKey("stages")
+    check observation["legal"]["orderMax"].getInt() == MaxOrder

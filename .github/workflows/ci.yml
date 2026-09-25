@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install pinned Nim
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$HOME/.local/bin/nimby" \
+            https://github.com/treeform/nimby/releases/download/0.1.26/nimby-Linux-X64
+          chmod +x "$HOME/.local/bin/nimby"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.nimby/nim/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/nimby" use 2.2.4
+      - name: Test simulation and policy
+        run: |
+          set -euo pipefail
+          nimby --global sync nimby.lock
+          for pkg in "$HOME"/.nimby/pkgs/*; do
+            if [ -d "$pkg/src" ]; then
+              echo "--path:\"$pkg/src\""
+            else
+              echo "--path:\"$pkg\""
+            fi
+          done > nim.cfg
+          echo '--path:"src"' >> nim.cfg
+          nim c -r --hints:off tests/test_sim.nim
+          nim c -r --hints:off tests/test_bot.nim
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build production image
+        run: docker build --platform linux/amd64 -t coworld-bullwhip:ci .

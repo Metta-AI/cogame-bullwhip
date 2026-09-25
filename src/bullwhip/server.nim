@@ -7,18 +7,19 @@
 ##   GET /client/replay              - replay page (replay mode)
 ##   GET /client/renderer.js         - shared stage renderer
 ##   GET /client/assets/<name>       - sprites and fonts
-##   WS  /player?slot=N&token=T      - player protocol (prompt delivery)
+##   WS  /player?slot=N&token=T      - player observation/action protocol
 ##   WS  /global                     - spectator snapshots
 ##   WS  /replay                     - replay payload (replay mode)
 ##
-## Player protocol (bullwhip.player.v1), all JSON text frames:
+## Player protocol (bullwhip.player.v2), all JSON text frames:
 ##   game -> player: {"type":"welcome","slot":N,"name":...,"role":...}
 ##                   {"type":"state",...} after every event (redacted to
 ##                   the seat's own stage: the chain has hidden information)
 ##                   {"type":"final","scores":[...],"costs":[...]}
-##   player -> game: {"type":"prompt","prompt":"...","scripted":"basestock"}
-##                   (max 4000 chars; scripted plays a built-in baseline
-##                   for that seat: "basestock" / "1", or "mirror")
+##   game -> player: {"type":"observation","week":N,"observation":{...}}
+##   player -> game: {"type":"register","control":"external"}
+##                   {"type":"action","week":N,"action":{"order":N,...}}
+##   Existing prompt registrations remain valid for published policies.
 
 import
   std/[json, locks, os, sets, strutils, tables, times, unicode],
@@ -38,6 +39,9 @@ type
     config: GameConfig
     sim: Sim
     prompts: seq[string]
+    external: seq[bool]
+    awaiting: seq[bool]
+    actions: seq[JsonNode]
     scripted: seq[ScriptKind]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
@@ -94,8 +98,7 @@ proc snapshotJson(gs: GameState): JsonNode =
 proc playerStateJson(gs: GameState, slot: int): JsonNode =
   ## The chain has hidden information (other stages' numbers, the demand
   ## script, pipeline contents), so a player sees only its own stage's
-  ## numbers, the week counter, and whether the episode is done. Decisions
-  ## are server-side, so this loses nothing.
+  ## numbers, the week counter, and whether the episode is done.
   let stage = gs.sim.roleOf[slot]
   var seat = stageJson(gs.sim.stages[stage])
   seat["role"] = %RoleNames[stage]
@@ -111,6 +114,32 @@ proc playerStateJson(gs: GameState, slot: int): JsonNode =
     "started": gs.started,
     "done": gs.sim.done,
     "reason": gs.sim.reason
+  }
+
+proc observationJson*(sim: Sim, slot: int): JsonNode =
+  ## One seat's information, independent of the policy implementation.
+  let stage = sim.roleOf[slot]
+  var history = newJArray()
+  for record in sim.history:
+    var week = stageJson(record.stages[stage])
+    week["order"] = %record.orders[stage]
+    history.add(week)
+  var heard = newJArray()
+  for other in neighbours(stage):
+    if sim.heard[other].len > 0:
+      heard.add(%*{"stage": other, "message": sim.heard[other]})
+  %*{
+    "name": sim.names[slot],
+    "role": RoleNames[stage],
+    "week": sim.week,
+    "weeks": sim.config.weeks,
+    "seat": stageJson(sim.stages[stage]),
+    "history": history,
+    "heard": heard,
+    "notes": sim.notes[slot],
+    "talk": sim.config.talk,
+    "legal": {"orderMin": 0, "orderMax": MaxOrder,
+      "sayMaxChars": MaxSayLen, "notesMaxChars": MaxNotesLen}
   }
 
 proc broadcastLocked(gs: GameState) =
@@ -264,6 +293,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var simCopy: Sim
       var seats: seq[int]
       var prompts: seq[string]
+      var external: seq[bool]
       var scripted: seq[ScriptKind]
       withLock stateLock:
         if state.sim.done:
@@ -281,19 +311,59 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         seats = state.sim.pendingSeats()
         simCopy = state.sim
         prompts = state.prompts
+        external = state.external
         scripted = state.scripted
         echo "bullwhip: week ", state.sim.week, " of ", config.weeks,
           " at ", (epochTime() - gameStart).int, "s"
 
-      ## The slow part (Claude, one parallel batch for the week) runs
+      ## Every external policy receives the same seat observation and returns
+      ## an action. Model choice, scripted logic, and prompts belong to that
+      ## policy, while the game validates every returned action.
+      withLock stateLock:
+        for seat in seats:
+          if external[seat]:
+            state.awaiting[seat] = true
+            state.actions[seat] = nil
+            if state.playerSockets.hasKey(seat):
+              state.playerSockets[seat].send($ %*{
+                "type": "observation",
+                "week": simCopy.week,
+                "observation": observationJson(simCopy, seat)
+              })
+
+      for seat in seats:
+        if external[seat]:
+          scripted[seat] = skBasestock
+
+      ## Legacy prompt requests (one parallel batch for the week) run
       ## outside the lock on a snapshot; only this thread mutates the sim,
       ## so the snapshot cannot go stale.
-      let decisions = client.decideAll(simCopy, seats, prompts, scripted)
+      var decisions = client.decideAll(simCopy, seats, prompts, scripted)
+
+      let actionDeadline = epochTime() + config.llmTimeoutSeconds.float
+      while epochTime() < actionDeadline:
+        var waiting = false
+        withLock stateLock:
+          for seat in seats:
+            if external[seat] and state.actions[seat].isNil:
+              waiting = true
+        if not waiting:
+          break
+        sleep(20)
+
+      withLock stateLock:
+        for index, seat in seats:
+          if external[seat]:
+            state.awaiting[seat] = false
+            if not state.actions[seat].isNil:
+              decisions[index] = parseDecision(state.actions[seat])
+            else:
+              echo "bullwhip: seat ", seat,
+                " missed action deadline; using base-stock fallback"
 
       withLock stateLock:
         for index, seat in seats:
           let decision = decisions[index]
-          let wasScripted = scripted[seat] != skNone or client.disabled
           echo "bullwhip: week ", state.sim.week, " ", state.sim.names[seat],
             " (", state.sim.roleName(seat), ") orders ", decision.order,
             (if decision.say.len > 0: " says \"" & decision.say & "\""
@@ -301,7 +371,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             " at ", (epochTime() - gameStart).int, "s"
           try:
             state.sim.applyOrder(seat, decision.order, decision.say,
-              decision.notes, wasScripted)
+              decision.notes, decision.scripted)
           except BullwhipError as error:
             echo "bullwhip: reply rejected (", error.msg,
               "); using scripted fallback"
@@ -389,7 +459,7 @@ proc playerUpgradeHandler(request: Request) {.gcsafe.} =
         state.playerSockets.len, "/", state.config.tokens.len, ")"
       websocket.send($ %*{
         "type": "welcome",
-        "protocol": "bullwhip.player.v1",
+        "protocol": "bullwhip.player.v2",
         "slot": slot,
         "name": state.sim.names[slot],
         "role": state.sim.roleName(slot),
@@ -434,7 +504,23 @@ proc websocketHandler(
         return
       try:
         let payload = parseJson(message.data)
-        if payload{"type"}.getStr() == "prompt":
+        if payload{"type"}.getStr() == "register":
+          if payload["control"].getStr() != "external":
+            raise newException(BullwhipError, "unknown player control")
+          withLock stateLock:
+            state.external[slot] = true
+          echo "bullwhip: slot ", slot, " registered external action control"
+        elif payload{"type"}.getStr() == "action":
+          withLock stateLock:
+            if state.external[slot] and state.awaiting[slot] and
+                payload["week"].getInt() == state.sim.week:
+              let action = payload["action"]
+              let decision = parseDecision(action)
+              var probe = state.sim
+              probe.applyOrder(slot, decision.order, decision.say,
+                decision.notes, false)
+              state.actions[slot] = action
+        elif payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
           if prompt.runeLen > MaxPromptLen:
             prompt = prompt.runeSubStr(0, MaxPromptLen)
@@ -518,6 +604,9 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.config = config
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)
+  state.external = newSeq[bool](config.players.len)
+  state.awaiting = newSeq[bool](config.players.len)
+  state.actions = newSeq[JsonNode](config.players.len)
   state.scripted = newSeq[ScriptKind](config.players.len)
   runtimeConfigGlobal = runtimeConfig
 
