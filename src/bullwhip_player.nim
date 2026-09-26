@@ -1,11 +1,10 @@
-## Bullwhip player: Jev chooses actions from seat observations.
+## Bullwhip player: prompt or scripted decisions from seat observations.
 ##
 ## Connects to the game and acts on each redacted seat observation. The
-## operator prompt, Jev call, and scripted logic stay inside this policy.
+## operator prompt and scripted logic stay inside this policy.
 ##
 ## PLAYER_SCRIPTED=basestock (or 1) chooses the base-stock baseline;
 ## PLAYER_SCRIPTED=mirror orders the incoming quantity.
-## PLAYER_JEV=1 runs Jev in this player container.
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <bullwhip-image> --name my-bullwhip \
@@ -36,13 +35,12 @@ when isMainModule:
   if url.len == 0:
     quit("COWORLD_PLAYER_WS_URL is not set", 1)
   let scripted = getEnv("PLAYER_SCRIPTED").strip()
-  let jev = getEnv("PLAYER_JEV") == "1"
   var prompt = getEnv("PLAYER_PROMPT")
-  if prompt.len == 0 and not jev:
+  if prompt.len == 0:
     prompt = DefaultPrompt
 
   proc register(): string =
-    if jev or scripted.len > 0:
+    if scripted.len > 0:
       $ %*{"type": "register", "control": "external"}
     else:
       $ %*{"type": "prompt", "prompt": prompt, "scripted": ""}
@@ -62,17 +60,12 @@ when isMainModule:
     if message.kind != TextMessage:
       continue
     let payload = parseJson(message.data)
-    if (jev or scripted.len > 0) and
-        payload{"type"}.getStr() == "observation":
+    if scripted.len > 0 and payload{"type"}.getStr() == "observation":
       let observation = payload["observation"]
-      let action =
-        if scripted.len > 0:
-          let order =
-            if scripted == "mirror": observation["seat"]["incoming"].getInt()
-            else: baseStockOrder(observation)
-          %*{"order": order, "say": "", "notes": ""}
-        else:
-          %*{"order": chooseOrder(observation), "say": "", "notes": ""}
+      let order =
+        if scripted == "mirror": observation["seat"]["incoming"].getInt()
+        else: baseStockOrder(observation)
+      let action = %*{"order": order, "say": "", "notes": ""}
       socket.send($ %*{"type": "action", "week": payload["week"],
         "action": action})
       continue
