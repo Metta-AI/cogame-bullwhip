@@ -18,9 +18,8 @@ seat may send one short, non-binding message a week to its two neighbours —
 honest forecasts or otherwise.
 
 The game sends a redacted observation to each externally controlled player
-and accepts one action per week. Jev and the two bundled scripted baselines
-use this interface. `PLAYER_JEV=1` makes the player call System One and rank
-orders; the game only validates and applies the returned order. The
+and accepts one action per week. The two bundled scripted baselines use this
+interface; the game validates and applies the returned order. The
 `basestock` policy uses Sterman's anchor-and-adjust with full supply-line
 accounting; `mirror` orders what it received. Existing prompt policies keep
 their server-side Claude adapter so published policies continue to play.
@@ -45,7 +44,7 @@ episode ends `complete` after `weeks` weeks (default 36, 4..60) or
 - `src/bullwhip/llm.nim` — existing prompt adapter and game fallback
 - `src/bullwhip/server.nim` — mummy HTTP/WS server (player, global, replay)
 - `src/bullwhip_player.nim` — the player observation/action loop
-- `src/bullwhip/policy.nim` — player-side Jev and scripted decisions
+- `src/bullwhip/policy.nim` — player-side base-stock decisions
 - `client/` — shared canvas renderer + global/player/replay pages (the
   parley broadcast chrome around the conveyor and the seismograph)
 - `replay-viewer/` — static wasm replay viewer (`?replay=<url>`)
@@ -74,9 +73,7 @@ nim c -d:release -o:bin/bullwhip src/bullwhip.nim
 nim c -d:release -o:bin/bullwhip-player src/bullwhip_player.nim
 nim c --hints:off -d:emscripten replay-viewer/bullwhip_replay.nim  # wasm viewer
 # A full local episode (game + four players, results and replay in tmp/):
-bash tools/local_episode.sh basestock 7 8
-# With TYPESAFE_API_KEY in the environment, compare the same seed:
-bash tools/local_episode.sh jev 7 8
+bash tools/local_episode.sh 7 8
 ```
 
 Coworld packaging (from a metta checkout):
@@ -99,18 +96,5 @@ uv run coworld upload-policy <bullwhip image> --name my-bullwhip \
 Or field a scripted baseline: same image, `--env PLAYER_SCRIPTED=basestock`
 or `--env PLAYER_SCRIPTED=mirror`.
 
-To field a Jev policy, reuse the image with `--use-bedrock --bedrock-model
-typesafe/jev-1.13 --secret-env PLAYER_JEV=1`. The **player container** uses
-its Bedrock sidecar, capture proxy, or TypeSafe key for System One. It sends
-only a legal order action to the game. The game uses base-stock if the player
-misses the action deadline. An invalid action is rejected by the game.
-
-The earlier game-side `bullwhip-jev-20260924:v1` policy ran privately on production
-Coworld 0.1.3 in `xreq_d926d421-d043-4969-9bc8-629f35d23d7f`. The eight-week
-episode seated Jev against three active base-stock v12 policies and capped
-combined player model spend at $0.05. All eight Jev calls returned HTTP 200;
-the replay marks eight model orders and no scripted fallback. Seat costs were
-54.0, 46.5, 49.5, and 50.5, with Jev in seat 0. This single game verifies the
-old hosted path, not this corrected player-side path or a performance
-advantage. No ladder submission was made. No new production game version or
-canary is part of the protocol rework.
+The game uses base-stock if an external player misses its action deadline.
+It rejects invalid actions.
