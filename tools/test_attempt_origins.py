@@ -74,6 +74,7 @@ for origin in ("teacher", "human", "model-mismatch"):
                 assert len(events[:-1]) == 16 and events[-1]["status"] == "completed"
                 for decision in events[:-1]:
                     attempt, = decision["attempts"]
+                    assert attempt["inference_mode"] == "text_action"
                     if origin == "model-mismatch":
                         assert attempt["origin"] == "model" and not attempt["accepted"]
                         assert attempt["parsed_action"] == {"order": 40, "say": "", "notes": ""}

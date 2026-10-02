@@ -107,6 +107,7 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                 for decision in events[:-1]:
                     assert decision["visibility"] == "private"
                     for attempt in decision["attempts"]:
+                        assert attempt["inference_mode"] == "text_action"
                         call_id = attempt["platform_call_id"]
                         request, body = calls[call_id]
                         recorded.add(call_id)
