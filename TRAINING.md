@@ -11,6 +11,8 @@ nim r -d:release --path:src tools/export_posttrain.nim \
 The exporter reads the standard Coworld manifest and freezes every seat's
 private view before simultaneous weekly orders. The same private view, prompt
 renderer, teacher policy, and typed action parser drive runtime and export.
+The published player, exporter, and language bridge use the same default
+operator strategy; custom bridge strategies require an explicit argument.
 Each trajectory includes every teacher proposal, applied action, terminal
 scores, immutable source commit, game version, and `bullwhip-<seed>` family.
 Existing output directories are refused. Output directories use mode 0700;

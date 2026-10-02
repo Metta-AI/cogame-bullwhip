@@ -2,9 +2,7 @@
 ## nim c -d:release --path:src -o:bullwhip-train-bridge tools/train_bridge.nim
 
 import std/[json, os]
-import bullwhip/[llm, sim, view]
-
-const DefaultOperatorPrompt = "Minimize your own inventory and backlog costs using only your stage history."
+import bullwhip/[llm, policy, sim, view]
 
 proc seedOf(value: string): int =
   var hash = 2166136261'u32

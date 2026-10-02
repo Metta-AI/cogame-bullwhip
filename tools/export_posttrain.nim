@@ -2,10 +2,8 @@
 ## Usage: nim r --path:src tools/export_posttrain.nim OUTPUT GAMES FIRST_SEED GAME_VERSION
 
 import std/[json, options, os, osproc, strutils]
-import bullwhip/[sim, llm, view]
+import bullwhip/[sim, llm, policy, view]
 import bitworld/decision_trajectory
-
-const OperatorPrompt = "Minimize your own inventory and backlog costs using only your stage history."
 
 when isMainModule:
   let args = commandLineParams()
@@ -62,7 +60,7 @@ when isMainModule:
         attempt.model = some("basestock-view")
         attempt.modelIdentity = some(sourceRevision)
         attempt.prompt = %*[{"role": "system", "content": systemPrompt(observation)},
-          {"role": "user", "content": userPrompt(observation, OperatorPrompt)}]
+          {"role": "user", "content": userPrompt(observation, DefaultOperatorPrompt)}]
         attempt.request = %*{"teacher": "basestock-view", "observation": observation}
         attempt.rawResponse = %($completion)
         attempt.response = %($completion)
@@ -90,7 +88,7 @@ when isMainModule:
     "source_revision": sourceRevision,
     "game_version": gameVersion,
     "teacher": "scripted-basestock",
-    "operator_prompt": OperatorPrompt,
+    "operator_prompt": DefaultOperatorPrompt,
     "complete_episodes": games,
     "decisions": games * variantConfig["weeks"].getInt() * Seats,
     "runs": runs
