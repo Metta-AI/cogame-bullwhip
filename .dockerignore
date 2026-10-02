@@ -1,0 +1,9 @@
+.git
+**/*.jsonl
+**/__pycache__
+posttrain*/
+training*/
+private*/
+.coworld/
+dist/
+tmp/

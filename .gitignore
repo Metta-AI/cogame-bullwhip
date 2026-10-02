@@ -5,3 +5,7 @@ replay-viewer/dist/nimcache/
 *.replay
 # Host-specific nimby package paths; regenerate per machine (see README).
 nim.cfg
+
+**/__pycache__/
+/tests/test_bot
+/tests/test_sim
