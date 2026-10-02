@@ -1,7 +1,6 @@
 # Metta post-training data
 
-The native simulator and published `basestock` policy export supervised
-examples for Bullwhip's certified standard game:
+The native simulator exports complete private basestock teacher episodes:
 
 ```sh
 nimby sync nimby.lock
@@ -9,28 +8,29 @@ nim r -d:release --path:src tools/export_posttrain.nim \
   /tmp/bullwhip-standard 10 1 SOURCE_GAME_VERSION
 ```
 
-The exporter reads the standard configuration from the Coworld manifest, adds
-the per-seat tokens supplied by the hosted platform, and plays complete seeded
-games. It freezes the game state at each simultaneous weekly decision, then
-records each seat's hosted system and user prompts and a `basestock` order
-accepted by the game's reply parser. Parsed orders drive the simulator. Whole
-games stay in one split. The manifest records source revision, scores, chain
-cost, and row counts. Existing output directories are never overwritten.
+The exporter reads the standard Coworld manifest and freezes every seat's
+private view before simultaneous weekly orders. The same private view, prompt
+renderer, teacher policy, and typed action parser drive runtime and export.
+Each trajectory includes every teacher proposal, applied action, terminal
+scores, immutable source commit, game version, and `bullwhip-<seed>` family.
+Existing output directories are refused. Output directories use mode 0700;
+private files use 0600. No split or supervised dataset rows are generated here.
 
-Train an output with Metta post-training:
+In the reviewed Metta source, qualify and export complete episodes, then use
+the shared application importer for the canonical seed-family split:
 
 ```sh
-nix develop -c uv run --package metta-posttrain --extra train \
-  python -m metta_posttrain.train --dataset /tmp/bullwhip-standard \
-  --output /tmp/bullwhip-adapter --model Qwen/Qwen3-0.6B \
-  --max-steps 100 --max-length 4096
+uv run coworld training export /tmp/bullwhip-standard/trajectories.jsonl \
+  /tmp/bullwhip-qualified --transport local
+uv run metta-posttrain export-hosted /tmp/bullwhip-qualified/episodes.jsonl \
+  /tmp/bullwhip-dataset
 ```
 
-Ten complete games yielded 1,152 training and 288 validation examples. Every
-example fit the Qwen2.5-0.5B-Instruct tokenizer in 4,096 tokens; the maximum
-was 1,715. One CPU optimizer step with a local tiny model verifies the Metta
-post-training path. These examples distill the scripted teacher; they do not
-establish stronger league play.
+The shared importer retains generation evidence, selects accepted teacher or
+model targets, and marks the dataset unreviewed. Content review is required
+before training. These local teacher examples do not establish stronger league
+play, hosted platform model joins, or learner sampling evidence. Historical
+corpora keep their original source and split provenance.
 
 # Numeric reinforcement learning
 
@@ -53,7 +53,7 @@ labels. A complete game returns each stage's native negative cost as score.
 
 ## Private decision corpus and language actions
 
-The exporter also writes `trajectories.jsonl`: complete engine-owned private
+The exporter writes `trajectories.jsonl`: complete engine-owned private
 trajectories with exact seat observations, prompts, teacher proposals, applied
 orders, scores, source commit, and game version. Output directories use mode
 0700 and files use 0600. Seed families use `bullwhip-<seed>`, matching runtime.

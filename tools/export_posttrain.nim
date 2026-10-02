@@ -1,4 +1,4 @@
-## Export complete Bullwhip games as Metta post-training examples.
+## Export complete Bullwhip games as canonical private training evidence.
 ## Usage: nim r --path:src tools/export_posttrain.nim OUTPUT GAMES FIRST_SEED GAME_VERSION
 
 import std/[json, options, os, osproc, strutils]
@@ -26,8 +26,6 @@ when isMainModule:
   let manifest = parseFile("coworld_manifest_template.json")
   let variantConfig = manifest["variants"][0]["game_config"]
   var
-    trainRows: seq[string]
-    validationRows: seq[string]
     trajectoryRows: seq[string]
     runs = newJArray()
   for seed in firstSeed ..< firstSeed + games:
@@ -43,7 +41,7 @@ when isMainModule:
     let episodeId = "bullwhip-standard-" & $seed
     let trajectory = newDecisionTrajectory(episodeId, "bullwhip-" & $seed,
       "bullwhip", gameVersion, sourceRevision)
-    var rows: seq[string]
+    var decisions = 0
     while not sim.done:
       let seats = sim.pendingSeats()
       let week = sim.week
@@ -71,38 +69,21 @@ when isMainModule:
         attempt.decoder = %*{"method": "deterministic"}
         attempt.parsedAction = decisionJson(parsed)
         attempt.accepted = true
-        rows.add($(%*{
-          "episode_id": "bullwhip-standard-" & $seed,
-          "seed": "bullwhip-" & $seed,
-          "decision_id": week * Seats + seat,
-          "prompt": [
-            {"role": "system", "content": systemPrompt(observation)},
-            {"role": "user", "content": userPrompt(observation, OperatorPrompt)}
-          ],
-          "completion": [{"role": "assistant", "content": $completion}],
-          "game": "bullwhip",
-          "action_schema_revision": "bullwhip-order-v1"
-        }))
+        inc decisions
         sim.applyOrder(seat, parsed.order, parsed.say, parsed.notes, true)
         trajectory.recordDecision($week & "-" & $seat, $seat, observation,
           @[attempt], some(attempt.attemptId), decisionJson(parsed), asAccepted,
           terminal = sim.done)
-    doAssert sim.reason == "complete" and rows.len == config.weeks * Seats
+    doAssert sim.reason == "complete" and decisions == config.weeks * Seats
     let outcome = sim.resultsJson()
     var outcomes = newJObject()
     for seat in 0 ..< Seats: outcomes[$seat] = outcome["scores"][seat]
     trajectory.finish(esCompleted, outcome, outcomes)
     trajectoryRows.add(trajectory.eventsJsonl().strip())
-    if seed mod 5 == 0:
-      validationRows.add(rows)
-    else:
-      trainRows.add(rows)
-    runs.add(%*{"seed": seed, "decisions": rows.len,
+    runs.add(%*{"seed": seed, "decisions": decisions,
       "scores": outcome["scores"], "chain_cost": outcome["chainCost"]})
-  writeFile(output / "train.jsonl", trainRows.join("\n") & "\n")
-  writeFile(output / "validation.jsonl", validationRows.join("\n") & "\n")
-  writeFile(output / "trajectories.jsonl", trajectoryRows.join("\n") & "\n")
-  writeFile(output / "manifest.json", pretty(%*{
+  writePrivate(output / "trajectories.jsonl", trajectoryRows.join("\n") & "\n")
+  writePrivate(output / "manifest.json", pretty(%*{
     "schema_version": 1,
     "game": "bullwhip",
     "variant": "standard",
@@ -110,10 +91,8 @@ when isMainModule:
     "game_version": gameVersion,
     "teacher": "scripted-basestock",
     "operator_prompt": OperatorPrompt,
-    "train_examples": trainRows.len,
-    "validation_examples": validationRows.len,
+    "complete_episodes": games,
+    "decisions": games * variantConfig["weeks"].getInt() * Seats,
     "runs": runs
   }) & "\n")
-  for name in ["train.jsonl", "validation.jsonl", "trajectories.jsonl", "manifest.json"]:
-    setFilePermissions(output / name, {fpUserRead, fpUserWrite})
-  echo "train=", trainRows.len, " validation=", validationRows.len
+  echo "complete_episodes=", games, " decisions=", games * variantConfig["weeks"].getInt() * Seats
