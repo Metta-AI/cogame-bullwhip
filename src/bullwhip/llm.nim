@@ -20,17 +20,17 @@
 ## scripted plays one deliberately, LLM or not.
 
 import
-  std/[json, math, os, strutils, unicode],
-  bitworld/runtime,
+  std/[json, math, options, os, parsejson, parseutils, streams, strutils, unicode],
+  bitworld/[runtime, decision_trajectory],
   curly,
-  sim
+  sim,
+  view,
+  policy
 
 const
   AnthropicUrl = "https://api.anthropic.com/v1/messages"
   AnthropicVersion = "2023-06-01"
   BedrockAnthropicVersion = "bedrock-2023-05-31"
-  ## The private notebook a seat may carry between weeks.
-  MaxNotesLen* = 600
 
 type
   ScriptKind* = enum
@@ -43,6 +43,18 @@ type
     say*: string
     notes*: string      ## "" when the reply carried none
     scripted*: bool
+    attempts*: seq[DecisionAttempt]
+    selectedAttemptId*: Option[string]
+
+  ProposalKind* = enum
+    pkAccepted, pkRejected
+
+  Proposal* = object
+    case kind*: ProposalKind
+    of pkAccepted:
+      decision*: Decision
+    of pkRejected:
+      reason*: string
 
   LlmTransport = enum
     ltNone, ltSidecar, ltBedrock, ltAnthropic
@@ -60,6 +72,7 @@ type
                           ## picks from bedrockModels instead
     maxOutputTokens: int
     timeoutSeconds: int
+    temperature: float
     disabled*: bool   ## true once credentials are known-unavailable
 
 proc parseScriptKind*(text: string): ScriptKind =
@@ -120,8 +133,12 @@ proc newLlmClient*(config: GameConfig): LlmClient =
   result = LlmClient(
     model: config.model,
     maxOutputTokens: config.maxOutputTokens,
-    timeoutSeconds: config.llmTimeoutSeconds
+    timeoutSeconds: config.llmTimeoutSeconds,
+    temperature: parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "1"))
   )
+  if classify(result.temperature) in {fcNan, fcInf, fcNegInf} or
+      result.temperature < 0 or result.temperature > 1:
+    raise newException(BullwhipError, "COWORLD_LLM_TEMPERATURE must be finite and in [0, 1]")
   let sidecarEndpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
   if sidecarEndpoint.len > 0:
     result.transport = ltSidecar
@@ -158,99 +175,50 @@ proc newLlmClient*(config: GameConfig): LlmClient =
 
 # ---- Scripted baselines -----------------------------------------------------
 
-const
-  ForecastSmoothing = 0.1
-  CoverWeeks = 3.0   ## desired inventory and supply line, in weeks of demand
-  InventoryGain = 0.1 ## share of the inventory gap closed per week
-  SupplyGain = 1.0    ## share of the supply-line gap closed per week
-  InitialOnOrder = 2 * BaseDemand  ## the primed shipping pipeline
-
-proc forecast*(sim: Sim, stage: int): float =
-  ## Exponentially smoothed incoming orders over the stage's whole
-  ## history, from a BaseDemand prior. Stateless so a fallback decision
-  ## for an LLM seat is as good as a scripted seat's. Slow on purpose:
-  ## a chain of four fast forecasters was measured to amplify a single
-  ## demand step into orders of 150+ (tmp/tune.nim); at 0.1 the peak is
-  ## ~60 and the chain cost about a quarter of that.
-  result = BaseDemand.float
-  for record in sim.history:
-    result = ForecastSmoothing * record.stages[stage].incoming.float +
-      (1.0 - ForecastSmoothing) * result
-
-proc onOrder*(sim: Sim, stage: int): int =
-  ## Everything ordered and not yet arrived — the shipping pipeline AND
-  ## whatever the supplier still owes. Counting only the visible pipeline
-  ## (the human mistake Sterman documents) is where the bullwhip comes
-  ## from.
-  result = InitialOnOrder
-  for index, record in sim.history:
-    if record.orders[stage] >= 0:
-      result += record.orders[stage]
-    if index > 0:
-      result -= record.stages[stage].received
-
-proc basestockOrder*(sim: Sim, stage: int): int =
-  ## Sterman's anchor-and-adjust: forecast, close a little of the
-  ## inventory gap, and close the whole supply-line gap.
-  let state = sim.stages[stage]
-  let demand = forecast(sim, stage)
-  let desiredInventory = CoverWeeks * demand
-  let desiredSupply = CoverWeeks * demand
-  let order = demand +
-    InventoryGain * (desiredInventory - state.inventory.float +
-      state.backlog.float) +
-    SupplyGain * (desiredSupply - onOrder(sim, stage).float)
-  max(0, min(MaxOrder, int(round(order))))
-
-proc mirrorOrder*(sim: Sim, stage: int): int =
-  max(0, min(MaxOrder, sim.stages[stage].incoming))
+proc scriptedAction*(observation: JsonNode, kind: ScriptKind): Decision =
+  ## Intentional teacher and engine fallback both consume the private view.
+  result.scripted = true
+  result.order = if kind == skMirror: observation["seat"]["incoming"].getInt()
+    else: baseStockOrder(observation)
 
 proc scriptedAction*(sim: Sim, seat: int, kind: ScriptKind): Decision =
-  ## Rule-based baseline for `seat`. Always legal; never talks or notes.
-  result.scripted = true
-  let stage = sim.roleOf[seat]
-  case kind
-  of skMirror: result.order = mirrorOrder(sim, stage)
-  else: result.order = basestockOrder(sim, stage)
+  scriptedAction(observationJson(sim, seat), kind)
 
 # ---- Prompt building --------------------------------------------------------
 
-proc seatName(sim: Sim, seat: int): string =
-  sim.names[seat]
-
-proc stageName(sim: Sim, stage: int): string =
-  ## "Gizmo (Wholesaler)".
-  sim.seatName(sim.seatOf[stage]) & " (" & RoleNames[stage] & ")"
+proc stageName(view: JsonNode, stage: int): string =
+  view["chain"][stage].getStr() & " (" & RoleNames[stage] & ")"
 
 proc money(value: float): string =
   formatFloat(value, ffDecimal, 1)
 
-proc historyTable(sim: Sim, stage: int): string =
-  ## Every observed week of this stage, oldest first.
+proc historyTable(view: JsonNode): string =
   var lines: seq[string]
   lines.add("week | incoming order | arrived | shipped | inventory | " &
     "backlog | week cost | YOUR ORDER")
-  for index, record in sim.history:
-    let s = record.stages[stage]
+  let history = view["history"]
+  for index in 0 ..< history.len:
+    let state = history[index]
     let order =
-      if record.orders[stage] >= 0: $record.orders[stage]
-      elif index == sim.history.high: "(this week: decide now)"
+      if state["order"].getInt() >= 0: $state["order"].getInt()
+      elif index == history.len - 1: "(this week: decide now)"
       else: "-"
-    lines.add($index & " | " & $s.incoming & " | " & $s.received & " | " &
-      $s.shipped & " | " & $s.inventory & " | " & $s.backlog & " | " &
-      money(s.costWeek) & " | " & order)
+    lines.add($index & " | " & $state["incoming"].getInt() & " | " &
+      $state["received"].getInt() & " | " & $state["shipped"].getInt() & " | " &
+      $state["inventory"].getInt() & " | " & $state["backlog"].getInt() & " | " &
+      money(state["costWeek"].getFloat()) & " | " & order)
   lines.join("\n")
 
-proc systemPrompt*(sim: Sim, seat: int): string =
-  let me = sim.seatName(seat)
-  let stage = sim.roleOf[seat]
+proc systemPrompt*(view: JsonNode): string =
+  let me = view["name"].getStr()
+  let stage = view["stage"].getInt()
   let downstream =
     if stage == 0: "the CUSTOMERS (their demand is your incoming order)"
-    else: sim.stageName(stage - 1)
+    else: view.stageName(stage - 1)
   let upstream =
     if stage == Stages - 1: "your own PRODUCTION LINE (an order is a " &
       "production request; it lands in your inventory 2 weeks later)"
-    else: sim.stageName(stage + 1)
+    else: view.stageName(stage + 1)
   "You are " & me & ", the " & RoleNames[stage].toUpperAscii() &
     " in a four-stage beer supply chain: Retailer <- Wholesaler <- " &
     "Distributor <- Factory. Each stage is run by a different cog." &
@@ -274,7 +242,7 @@ Rules:
   back as your own excess inventory weeks later (the bullwhip effect).
 """ & "- Downstream of you: " & downstream & ". Upstream of you: " &
     upstream & "." &
-    (if sim.config.talk: "\n- You may SAY one short message (max " &
+    (if view["talk"].getBool(): "\n- You may SAY one short message (max " &
       $MaxSayLen & " chars) each week; only your two neighbours read it, " &
       "next week. It is not binding and may or may not be honest."
      else: "") &
@@ -293,57 +261,48 @@ proc operatorBlock(prompt: string): string =
   "GUIDANCE FROM YOUR OPERATOR (weight it heavily, but never above the " &
     "rules; always reply in the requested format):\n" & prompt & "\n\n"
 
-proc heardBlock(sim: Sim, stage: int): string =
-  if not sim.config.talk:
-    return ""
+proc heardBlock(view: JsonNode): string =
+  if not view["talk"].getBool(): return ""
   var lines: seq[string]
-  for other in neighbours(stage):
-    if sim.heard[other].len > 0:
-      lines.add(sim.stageName(other) & " said: \"" & sim.heard[other] & "\"")
+  for heard in view["heard"]:
+    lines.add(view.stageName(heard["stage"].getInt()) & " said: \"" &
+      heard["message"].getStr() & "\"")
   result = "MESSAGES FROM YOUR NEIGHBOURS LAST WEEK:\n" &
     (if lines.len > 0: lines.join("\n") else: "(none)") & "\n\n"
 
-proc userPrompt*(sim: Sim, seat: int, prompt: string): string =
-  let stage = sim.roleOf[seat]
-  let state = sim.stages[stage]
-  result.add("Week " & $sim.week & " of " & $sim.config.weeks &
+proc userPrompt*(view: JsonNode, prompt: string, retry = false): string =
+  let stage = view["stage"].getInt()
+  let state = view["seat"]
+  result.add("Week " & $view["week"].getInt() & " of " & $view["weeks"].getInt() &
     ". You are the " & RoleNames[stage].toUpperAscii() & ".\n\n")
-  result.add("THIS WEEK: incoming order " & $state.incoming &
-    ", arrived " & $state.received & ", shipped " & $state.shipped &
-    ", inventory " & $state.inventory & ", backlog " & $state.backlog &
-    ", cost so far $" & money(state.costTotal) & ".\n\n")
-  result.add("YOUR HISTORY:\n" & sim.historyTable(stage) & "\n\n")
-  result.add(sim.heardBlock(stage))
+  result.add("THIS WEEK: incoming order " & $state["incoming"].getInt() &
+    ", arrived " & $state["received"].getInt() & ", shipped " & $state["shipped"].getInt() &
+    ", inventory " & $state["inventory"].getInt() & ", backlog " & $state["backlog"].getInt() &
+    ", cost so far $" & money(state["costTotal"].getFloat()) & ".\n\n")
+  result.add("YOUR HISTORY:\n" & view.historyTable() & "\n\n")
+  result.add(view.heardBlock())
   result.add("YOUR NOTES FROM EARLIER WEEKS:\n" &
-    (if sim.notes[seat].len > 0: sim.notes[seat] else: "(none)") & "\n\n")
+    (if view["notes"].getStr().len > 0: view["notes"].getStr() else: "(none)") & "\n\n")
   result.add(operatorBlock(prompt))
   result.add("Reply with ONLY {\"order\": 8" &
-    (if sim.config.talk: ", \"say\": \"…\"" else: "") &
+    (if view["talk"].getBool(): ", \"say\": \"…\"" else: "") &
     ", \"notes\": \"…\"} — order is a whole number of units, 0 to " &
-    $MaxOrder & (if sim.config.talk: "; say at most " & $MaxSayLen &
+    $MaxOrder & (if view["talk"].getBool(): "; say at most " & $MaxSayLen &
       " characters (or \"\")" else: "") &
     "; notes at most " & $MaxNotesLen & " characters.")
 
 # ---- Anthropic / Bedrock transport ------------------------------------------
 
-proc extractJsonObject(text: string): JsonNode =
-  ## Pulls the first {...} object out of a model response, tolerating fences.
-  let start = text.find('{')
-  let stop = text.rfind('}')
-  if start < 0 or stop <= start:
-    ## Quote the head of the reply so a hosted log shows WHAT the model
-    ## sent instead of JSON (prose, a refusal, a cut-off analysis...).
-    var head = text.strip()
-    if head.len > 160:
-      head = head[0 ..< 160] & "..."
-    raise newException(BullwhipError, "no JSON object in response: " &
-      head.replace("\n", " "))
-  parseJson(text[start .. stop])
+  if retry:
+    result.add("\nYour previous reply was invalid. Respond with ONLY " &
+      "the requested JSON object, with \"order\" a whole number 0.." &
+      $MaxOrder & ".")
 
 proc requestFor(client: LlmClient, system, user: string, slot: int):
     tuple[url: string, headers: HttpHeaders, body: string] =
   var body = %*{
     "max_tokens": client.maxOutputTokens,
+    "temperature": client.temperature,
     "system": system,
     "messages": [{"role": "user", "content": user}]
   }
@@ -412,32 +371,45 @@ proc cleanText*(text: string, limit: int): string =
     return
   result = result.runeSubStr(0, limit - 1) & "…"
 
-proc parseDecision*(payload: JsonNode): Decision =
-  ## "order" is an integer, a numeric string, or a float (rounded).
-  result.notes = cleanText(payload{"notes"}.getStr(), MaxNotesLen)
-  result.say = cleanText(payload{"say"}.getStr(), MaxSayLen)
-    .replace("\n", " ")
-  let node = payload{"order"}
-  if node.isNil:
-    raise newException(BullwhipError, "no order in response")
-  var order = -1
+proc decisionJson*(decision: Decision): JsonNode =
+  %*{"order": decision.order, "say": decision.say, "notes": decision.notes}
+
+proc parseProposal*(text: string, observation: JsonNode): Proposal =
+  ## Domain validation returns a typed result; unexpected failures still crash.
+  let first = text.find('{')
+  let last = text.rfind('}')
+  if first < 0 or last <= first:
+    return Proposal(kind: pkRejected, reason: "no JSON object in response")
+  let body = text[first .. last]
+  var parser: JsonParser
+  parser.open(newStringStream(body), "player response")
+  defer: parser.close()
+  while true:
+    parser.next()
+    if parser.kind == jsonError:
+      return Proposal(kind: pkRejected, reason: parser.errorMsg())
+    if parser.kind == jsonEof: break
+  let payload = parseJson(body)
+  if payload.kind != JObject or not payload.hasKey("order"):
+    return Proposal(kind: pkRejected, reason: "no order in response")
+  let node = payload["order"]
+  var number: float
   case node.kind
-  of JInt:
-    order = node.getInt()
-  of JFloat:
-    order = int(round(node.getFloat()))
+  of JInt: number = float(node.getBiggestInt())
+  of JFloat: number = node.getFloat()
   of JString:
-    let text = node.getStr().strip()
-    try:
-      order = int(round(parseFloat(text)))
-    except ValueError:
-      raise newException(BullwhipError, "order is not a number: " & text)
+    let value = node.getStr().strip()
+    if parseutils.parseFloat(value, number) != value.len or value.len == 0:
+      return Proposal(kind: pkRejected, reason: "order is not a number")
   else:
-    raise newException(BullwhipError, "order must be a number: " & $node)
-  if order < 0 or order > MaxOrder:
-    raise newException(BullwhipError,
-      "order must be 0.." & $MaxOrder & ": " & $order)
-  result.order = order
+    return Proposal(kind: pkRejected, reason: "order must be a number")
+  if number.classify in {fcNan, fcInf, fcNegInf} or round(number) < 0 or round(number) > MaxOrder.float:
+    return Proposal(kind: pkRejected, reason: "order outside allowed bounds")
+  var decision = Decision(order: int(round(number)),
+    notes: cleanText(payload{"notes"}.getStr(), MaxNotesLen),
+    say: cleanText(payload{"say"}.getStr(), MaxSayLen).replace("\n", " "))
+  if not observation["talk"].getBool(): decision.say = ""
+  Proposal(kind: pkAccepted, decision: decision)
 
 proc decideAll*(
   client: LlmClient,
@@ -462,34 +434,83 @@ proc decideAll*(
     if open.len == 0 or client.disabled:
       break
     var batch: RequestBatch
+    var started: seq[DecisionAttempt]
     for index in open:
       let seat = seats[index]
-      var user = sim.userPrompt(seat, prompts[seat])
-      if attempt > 0:
-        user.add("\nYour previous reply was invalid. Respond with ONLY " &
-          "the requested JSON object, with \"order\" a whole number 0.." &
-          $MaxOrder & ".")
-      let request = client.requestFor(systemPrompt(sim, seat), user, seat)
+      let observation = observationJson(sim, seat)
+      let user = userPrompt(observation, prompts[seat], retry = attempt > 0)
+      let request = client.requestFor(systemPrompt(observation), user, seat)
+      var evidence = newDecisionAttempt($sim.week & "-" & $seat & "-" & $attempt,
+        "prompt", aoModel)
+      evidence.prompt = %*[{"role": "system", "content": systemPrompt(observation)},
+        {"role": "user", "content": user}]
+      evidence.request = parseJson(request.body)
+      evidence.model = some(if client.transport == ltBedrock:
+        client.bedrockModels[client.bedrockModel] else: client.model)
+      evidence.decoder = %*{"temperature": client.temperature, "max_tokens": client.maxOutputTokens}
+      started.add(evidence)
       batch.post(request.url, request.headers, request.body, $index)
     let responses = client.curl.makeRequests(batch, client.timeoutSeconds)
     var stillOpen: seq[int]
     for position, index in open:
       let seat = seats[index]
+      var evidence = started[position]
+      let response = responses[position].response
+      evidence.rawResponse = %response.body
+      if response.headers.contains("X-Softmax-Llm-Call-Id"):
+        evidence.platformCallId = some(response.headers["X-Softmax-Llm-Call-Id"])
+      for header in ["X-Coworld-Checkpoint-Sha256", "X-Coworld-Tokenizer-Sha256",
+          "X-Coworld-Chat-Template-Sha256"]:
+        if response.headers.contains(header):
+          case header
+          of "X-Coworld-Checkpoint-Sha256": evidence.modelIdentity = some(response.headers[header])
+          of "X-Coworld-Tokenizer-Sha256": evidence.tokenizerIdentity = some(response.headers[header])
+          else: evidence.chatTemplateSha256 = some(response.headers[header])
       try:
         let text = client.textOf(responses[position].response,
           responses[position].error, batch[position].url)
-        var decision = parseDecision(extractJsonObject(text))
+        evidence.response = %text
+        let payload = parseJson(response.body)
+        if payload.hasKey("model"): evidence.model = some(payload["model"].getStr())
+        evidence.stopReason = some(payload["stop_reason"].getStr())
+        if payload.hasKey("usage"):
+          evidence.inputTokens = some(payload["usage"]["input_tokens"].getInt())
+          evidence.outputTokens = some(payload["usage"]["output_tokens"].getInt())
+        if payload.hasKey("sampling_evidence") and payload["sampling_evidence"].kind != JNull:
+          let sampling = payload["sampling_evidence"]
+          var promptIds, sampledIds: seq[int]
+          var probabilities: seq[float]
+          for token in sampling["prompt_token_ids"]: promptIds.add(token.getInt())
+          for token in sampling["completion_token_ids"]: sampledIds.add(token.getInt())
+          evidence.promptTokenIds = some(promptIds)
+          evidence.sampledTokenIds = some(sampledIds)
+          if sampling["behavior_log_probs"].kind != JNull:
+            for probability in sampling["behavior_log_probs"]: probabilities.add(probability.getFloat())
+            evidence.behaviorLogprobs = some(probabilities)
+          evidence.stopReason = some(sampling["stop_reason"].getStr())
+          evidence.decoder["sampling_evidence"] = copy(sampling)
+        let proposal = parseProposal(text, observationJson(sim, seat))
+        if proposal.kind == pkRejected:
+          raise newException(BullwhipError, proposal.reason)
+        var decision = proposal.decision
         ## Reject illegal replies here so the retry carries the hint.
         var probe = sim
         probe.applyOrder(seat, decision.order, decision.say, decision.notes,
           false)
+        evidence.accepted = true
+        evidence.parsedAction = decisionJson(decision)
+        decision.attempts = result[index].attempts & @[evidence]
+        decision.selectedAttemptId = some(evidence.attemptId)
         result[index] = decision
       except CatchableError as error:
-        echo "bullwhip llm: seat ", seat, " attempt ", attempt, " failed: ",
-          error.msg
+        evidence.rejectionReason = some(error.msg)
+        result[index].attempts.add(evidence)
+        echo "bullwhip llm: seat ", seat, " attempt ", attempt, " failed"
         stillOpen.add(index)
     open = stillOpen
   for index in open:
     let seat = seats[index]
     echo "bullwhip llm: seat ", seat, " falling back to scripted decision"
+    let attempts = result[index].attempts
     result[index] = scriptedAction(sim, seat, skBasestock)
+    result[index].attempts = attempts

@@ -2,9 +2,7 @@
 ## nim c -d:release --path:src -o:bullwhip-train-bridge tools/train_bridge.nim
 
 import std/[json, os]
-import bullwhip/[llm, sim]
-
-const OperatorPrompt = "Minimize your own inventory and backlog costs using only your stage history."
+import bullwhip/[llm, policy, sim, view]
 
 proc seedOf(value: string): int =
   var hash = 2166136261'u32
@@ -12,30 +10,28 @@ proc seedOf(value: string): int =
     hash = (hash xor uint32(ord(ch))) * 16777619'u32
   int(hash and 0x7fffffff'u32)
 
-proc decision(game: Sim, id, seat: int): JsonNode =
+var languageMode = false
+var operatorPrompt = DefaultOperatorPrompt
+var rejectedAttempts = 0
+
+proc decision(game: Sim, id, seat: int, retry = false): JsonNode =
   let stage = game.roleOf[seat]
   let state = game.stages[stage]
-  %*{
+  result = %*{
     "kind": "decision", "game": "bullwhip", "decision_id": id,
     "seat": seat, "engine_seat": seat, "turn": game.week,
-    "semantic_view": {
-      "seat": seat, "role": game.roleName(seat), "week": game.week,
-      "weeks": game.config.weeks, "inventory": state.inventory,
-      "backlog": state.backlog, "incoming": state.incoming,
-      "received": state.received, "shipped": state.shipped,
-      "ship_pipe": state.shipPipe, "last_order": state.lastOrder,
-      "cost_week": state.costWeek, "cost_total": state.costTotal
-    },
+    "semantic_view": observationJson(game, seat),
     "inbox": [],
     "messages": [
-      {"role": "system", "content": systemPrompt(game, seat)},
-      {"role": "user", "content": userPrompt(game, seat, OperatorPrompt)}
+      {"role": "system", "content": systemPrompt(observationJson(game, seat))},
+      {"role": "user", "content": userPrompt(observationJson(game, seat), operatorPrompt, retry)}
     ],
     "speech_messages": [],
     "action_schema": {"type": "object", "required": ["order"],
       "properties": {"order": {"type": "integer", "minimum": 0,
         "maximum": MaxOrder}}},
-    "typed_question": newJNull()
+    "typed_question": newJNull(),
+    "inference_mode": (if languageMode: %"text_action" else: newJNull())
   }
 
 proc encoding(game: Sim, id, seat: int): JsonNode =
@@ -65,8 +61,12 @@ proc encoding(game: Sim, id, seat: int): JsonNode =
 
 when isMainModule:
   let args = commandLineParams()
-  if args.len != 1:
-    quit("usage: bullwhip-train-bridge MANIFEST", 1)
+  if args.len notin 1 .. 3:
+    quit("usage: bullwhip-train-bridge MANIFEST [--language [OPERATOR_PROMPT]]", 1)
+  if args.len >= 2:
+    doAssert args[1] == "--language"
+    languageMode = true
+  if args.len == 3: operatorPrompt = args[2]
   let manifest = parseFile(args[0])
   let variantConfig = manifest["variants"][0]["game_config"]
   var game: Sim
@@ -86,6 +86,7 @@ when isMainModule:
       config = sampleEpisode(config)
       game = initSim(config)
       id = 0
+      rejectedAttempts = 0
       seat = game.pendingSeats()[0]
       response = game.decision(id, seat)
     of "encode":
@@ -93,13 +94,28 @@ when isMainModule:
       response = game.encoding(id, seat)
     of "teacher":
       doAssert not game.done
-      let teacher = game.scriptedAction(seat, skBasestock)
-      response = %*{"response": $(%*{"order": teacher.order})}
+      let teacher = scriptedAction(observationJson(game, seat), skBasestock)
+      response = %*{"response": $(if languageMode: decisionJson(teacher) else: %*{"order": teacher.order})}
     of "step":
       doAssert not game.done and request["decision_id"].getInt() == id
-      let action = parseJson(request["response"].getStr())
-      let parsed = parseDecision(action)
-      game.applyOrder(seat, parsed.order, parsed.say, parsed.notes, false)
+      let view = observationJson(game, seat)
+      let proposal = parseProposal(request["response"].getStr(), view)
+      var parsed: Decision
+      var consumed = false
+      if proposal.kind == pkRejected:
+        inc rejectedAttempts
+        if rejectedAttempts == 1:
+          response = %*{"kind": "rejected", "reason": proposal.reason,
+            "observation": game.decision(id, seat, retry = true)}
+          stdout.writeLine($response)
+          stdout.flushFile()
+          continue
+        parsed = scriptedAction(view, skBasestock)
+        consumed = true
+      else: parsed = proposal.decision
+      let action = if languageMode: decisionJson(parsed) else: %*{"order": parsed.order}
+      game.applyOrder(seat, parsed.order, parsed.say, parsed.notes, consumed)
+      rejectedAttempts = 0
       inc id
       var observation: JsonNode
       if game.done:
@@ -111,8 +127,9 @@ when isMainModule:
       else:
         seat = game.pendingSeats()[0]
         observation = game.decision(id, seat)
-      response = %*{"kind": "accepted", "action": action,
+      response = %*{"kind": (if consumed: "consumed_rejection" else: "accepted"), "action": action,
         "observation": observation}
+      if consumed: response["reason"] = %proposal.reason
     else:
       raise newException(ValueError, "unknown command: " & request["kind"].getStr())
     stdout.writeLine($response)

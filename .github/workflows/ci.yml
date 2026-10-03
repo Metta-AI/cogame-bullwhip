@@ -35,6 +35,16 @@ jobs:
           echo '--path:"src"' >> nim.cfg
           nim c -r --hints:off tests/test_sim.nim
           nim c -r --hints:off tests/test_bot.nim
+          nim c -r -d:release --hints:off tests/test_sim.nim
+          nim c -r -d:release --hints:off tests/test_bot.nim
+          nim c -d:release --hints:off -o:/tmp/bullwhip-game src/bullwhip.nim
+          nim c -d:release --hints:off -o:/tmp/bullwhip-player src/bullwhip_player.nim
+          nim c -d:release --hints:off -o:/tmp/bullwhip-bridge tools/train_bridge.nim
+          nim c -d:release --hints:off -o:/tmp/bullwhip-export tools/export_posttrain.nim
+          python3 tools/test_native_trajectory.py /tmp/bullwhip-game /tmp/bullwhip-player
+          python3 -m venv /tmp/bullwhip-fixture-venv
+          /tmp/bullwhip-fixture-venv/bin/pip install websockets==15.0.1
+          /tmp/bullwhip-fixture-venv/bin/python tools/test_attempt_origins.py /tmp/bullwhip-game
 
   docker-build:
     runs-on: ubuntu-latest

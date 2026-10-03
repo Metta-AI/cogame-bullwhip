@@ -22,13 +22,16 @@
 ##   Existing prompt registrations remain valid for published policies.
 
 import
-  std/[json, locks, os, sets, strutils, tables, times, unicode],
-  bitworld/runtime,
+  std/[json, locks, options, os, sets, strutils, tables, times, unicode],
+  bitworld/[runtime, decision_trajectory],
   curly,
   mummy,
   mummy/routers,
   llm,
-  sim
+  sim,
+  view
+
+export view
 
 const
   MaxPromptLen = 4000
@@ -40,14 +43,17 @@ type
     sim: Sim
     prompts: seq[string]
     external: seq[bool]
+    ready: seq[bool]
     awaiting: seq[bool]
     actions: seq[JsonNode]
+    externalAttempts: seq[seq[DecisionAttempt]]
     scripted: seq[ScriptKind]
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
     started: bool
     finished: bool
+    trajectory: DecisionTrajectory
 
 var
   stateLock: Lock
@@ -79,14 +85,24 @@ proc policyNamesJson(gs: GameState): JsonNode =
   for player in gs.config.players:
     result.add(%player.name)
 
+proc publicEventJson*(event: GameEvent): JsonNode =
+  ## Notebooks belong to private decisions, including when saved in engine events.
+  var publicEvent = event
+  if publicEvent.kind == evOrder: publicEvent.text = ""
+  publicEvent.eventToJson()
+
+proc publicTableJson*(sim: Sim): JsonNode =
+  result = sim.tableStateJson()
+  for seat in result["seats"]: seat.delete("notes")
+
 proc snapshotJson(gs: GameState): JsonNode =
   var events = newJArray()
   for event in gs.sim.events:
-    events.add(event.eventToJson())
+    events.add(publicEventJson(event))
   var connected = newJArray()
   for slot in 0 ..< gs.config.tokens.len:
     connected.add(%gs.playerSockets.hasKey(slot))
-  result = gs.sim.tableStateJson()
+  result = gs.sim.publicTableJson()
   result["type"] = %"state"
   result["game"] = %"bullwhip"
   result["policyNames"] = gs.policyNamesJson()
@@ -114,32 +130,6 @@ proc playerStateJson(gs: GameState, slot: int): JsonNode =
     "started": gs.started,
     "done": gs.sim.done,
     "reason": gs.sim.reason
-  }
-
-proc observationJson*(sim: Sim, slot: int): JsonNode =
-  ## One seat's information, independent of the policy implementation.
-  let stage = sim.roleOf[slot]
-  var history = newJArray()
-  for record in sim.history:
-    var week = stageJson(record.stages[stage])
-    week["order"] = %record.orders[stage]
-    history.add(week)
-  var heard = newJArray()
-  for other in neighbours(stage):
-    if sim.heard[other].len > 0:
-      heard.add(%*{"stage": other, "message": sim.heard[other]})
-  %*{
-    "name": sim.names[slot],
-    "role": RoleNames[stage],
-    "week": sim.week,
-    "weeks": sim.config.weeks,
-    "seat": stageJson(sim.stages[stage]),
-    "history": history,
-    "heard": heard,
-    "notes": sim.notes[slot],
-    "talk": sim.config.talk,
-    "legal": {"orderMin": 0, "orderMax": MaxOrder,
-      "sayMaxChars": MaxSayLen, "notesMaxChars": MaxNotesLen}
   }
 
 proc broadcastLocked(gs: GameState) =
@@ -173,7 +163,7 @@ proc replayPayload(gs: GameState, results: JsonNode): string =
     names.add(%name)
   var events = newJArray()
   for event in gs.sim.events:
-    events.add(event.eventToJson())
+    events.add(publicEventJson(event))
   $ %*{
     "protocol": "bullwhip.replay.v" & $ReplayVersion,
     "names": names,
@@ -192,7 +182,7 @@ proc statesFromEvents(config: GameConfig, events: seq[GameEvent]): JsonNode =
   ## One table-state object per event prefix, for scrubbing replays.
   result = newJArray()
   for frame in replayMatch(config, events):
-    result.add(frame.tableStateJson())
+    result.add(frame.publicTableJson())
 
 proc finishEpisode(runtimeConfig: RuntimeConfig) =
   var results: JsonNode
@@ -203,6 +193,11 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
     state.finished = true
     results = state.sim.resultsJson()
     replayData = state.replayPayload(results)
+    if getEnv(CogameSaveTrajectoryUriEnv).len > 0:
+      var outcomes = newJObject()
+      for slot in 0 ..< Seats: outcomes[$slot] = results["scores"][slot]
+      state.trajectory.finish((if results["reason"].getStr() == "complete":
+        esCompleted else: esTruncated), results, outcomes)
 
     ## Send final frames to players BEFORE writing artifacts: the hosted
     ## worker tears player pods down as soon as results.json exists, and
@@ -228,6 +223,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
     state.broadcastLocked()
 
   sleep(500)
+  if getEnv(CogameSaveTrajectoryUriEnv).len > 0:
+    state.trajectory.writeEventsToUri(getEnv(CogameSaveTrajectoryUriEnv))
   echo "bullwhip: writing results and replay"
   writeArtifact(
     runtimeConfig.resultsUri, $results, "application/json",
@@ -249,6 +246,11 @@ const PlayBudgetFraction* = 0.6
 proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
   {.gcsafe.}:
     let config = state.config
+    let trajectoryUri = getEnv(CogameSaveTrajectoryUriEnv)
+    if trajectoryUri.len > 0:
+      state.trajectory = newDecisionTrajectory(getEnv("COWORLD_EPISODE_ID"),
+        "bullwhip-" & $config.seed, "bullwhip", getEnv("COWORLD_GAME_VERSION"),
+        getEnv("COWORLD_SOURCE_REVISION"))
     let gameStart = epochTime()
     let deadline = gameStart + config.playerConnectTimeoutSeconds
 
@@ -256,6 +258,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var allConnected = false
       withLock stateLock:
         allConnected = state.playerSockets.len >= config.tokens.len
+        for seat in 0 ..< config.tokens.len:
+          if not state.ready[seat]: allConnected = false
       if allConnected:
         break
       sleep(200)
@@ -316,6 +320,9 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         echo "bullwhip: week ", state.sim.week, " of ", config.weeks,
           " at ", (epochTime() - gameStart).int, "s"
 
+      var observations: seq[JsonNode]
+      for seat in seats: observations.add(observationJson(simCopy, seat))
+
       ## Every external policy receives the same seat observation and returns
       ## an action. Model choice, scripted logic, and prompts belong to that
       ## policy, while the game validates every returned action.
@@ -324,6 +331,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           if external[seat]:
             state.awaiting[seat] = true
             state.actions[seat] = nil
+            state.externalAttempts[seat] = @[]
             if state.playerSockets.hasKey(seat):
               state.playerSockets[seat].send($ %*{
                 "type": "observation",
@@ -356,14 +364,19 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           if external[seat]:
             state.awaiting[seat] = false
             if not state.actions[seat].isNil:
-              decisions[index] = parseDecision(state.actions[seat])
+              let proposal = parseProposal($state.actions[seat], observationJson(simCopy, seat))
+              doAssert proposal.kind == pkAccepted
+              decisions[index] = proposal.decision
+              decisions[index].attempts = state.externalAttempts[seat]
+              decisions[index].selectedAttemptId = some(state.externalAttempts[seat][^1].attemptId)
             else:
               echo "bullwhip: seat ", seat,
                 " missed action deadline; using base-stock fallback"
+              decisions[index].attempts = state.externalAttempts[seat]
 
       withLock stateLock:
         for index, seat in seats:
-          let decision = decisions[index]
+          var decision = decisions[index]
           echo "bullwhip: week ", state.sim.week, " ", state.sim.names[seat],
             " (", state.sim.roleName(seat), ") orders ", decision.order,
             (if decision.say.len > 0: " says \"" & decision.say & "\""
@@ -373,10 +386,23 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
             state.sim.applyOrder(seat, decision.order, decision.say,
               decision.notes, decision.scripted)
           except BullwhipError as error:
-            echo "bullwhip: reply rejected (", error.msg,
-              "); using scripted fallback"
+            if decision.selectedAttemptId.isSome:
+              decision.attempts[^1].accepted = false
+              decision.attempts[^1].rejectionReason = some(error.msg)
+            echo "bullwhip: reply rejected; using scripted fallback"
             let fallback = scriptedAction(state.sim, seat, skBasestock)
             state.sim.applyOrder(seat, fallback.order, "", "", true)
+            decision.order = fallback.order
+            decision.say = ""
+            decision.notes = ""
+            decision.selectedAttemptId = none(string)
+          if trajectoryUri.len > 0:
+            state.trajectory.recordDecision($simCopy.week & "-" & $seat, $seat,
+              observations[index], decision.attempts, decision.selectedAttemptId,
+              decisionJson(decision),
+              (if decision.selectedAttemptId.isSome: asAccepted else: asFallback),
+              terminal = state.sim.done, fallbackOrigin = (if decision.selectedAttemptId.isSome:
+                none(string) else: some("engine-basestock")))
         state.broadcastLocked()
 
       ## Pace between weeks so spectators can read the chain.
@@ -502,6 +528,7 @@ proc websocketHandler(
         slot = state.socketSlots.getOrDefault(websocket, -1)
       if slot < 0:
         return
+      var recordedAttempt = false
       try:
         let payload = parseJson(message.data)
         if payload{"type"}.getStr() == "register":
@@ -509,17 +536,44 @@ proc websocketHandler(
             raise newException(BullwhipError, "unknown player control")
           withLock stateLock:
             state.external[slot] = true
+            state.ready[slot] = true
           echo "bullwhip: slot ", slot, " registered external action control"
         elif payload{"type"}.getStr() == "action":
           withLock stateLock:
-            if state.external[slot] and state.awaiting[slot] and
+            if state.external[slot] and state.awaiting[slot] and state.actions[slot].isNil and
                 payload["week"].getInt() == state.sim.week:
-              let action = payload["action"]
-              let decision = parseDecision(action)
+              var evidence = if payload.hasKey("training_attempt"):
+                readAttemptEvidence(payload["training_attempt"])
+                else: newDecisionAttempt($state.sim.week & "-" & $slot & "-external-" &
+                  $state.externalAttempts[slot].len, "external", aoUnknown)
+              if evidence.origin in {aoTeacher, aoHuman}: evidence.origin = aoUnknown
+              if not payload.hasKey("training_attempt"):
+                evidence.response = copy(payload["action"])
+                evidence.rawResponse = copy(payload["action"])
+              evidence.rejectionReason = some("external proposal not applied")
+              state.externalAttempts[slot].add(evidence)
+              recordedAttempt = true
+              let observation = observationJson(state.sim, slot)
+              let proposal = parseProposal($payload["action"], observation)
+              if proposal.kind == pkRejected:
+                raise newException(BullwhipError, proposal.reason)
+              let decision = proposal.decision
+              if evidence.origin == aoModel:
+                if evidence.response.kind != JString:
+                  raise newException(BullwhipError, "model response must be text")
+                let sampled = parseProposal(evidence.response.getStr(), observation)
+                if sampled.kind == pkRejected:
+                  raise newException(BullwhipError, sampled.reason)
+                state.externalAttempts[slot][^1].parsedAction = decisionJson(sampled.decision)
+                if decisionJson(sampled.decision) != decisionJson(decision):
+                  raise newException(BullwhipError, "model response differs from player action")
+              else:
+                state.externalAttempts[slot][^1].parsedAction = decisionJson(decision)
               var probe = state.sim
-              probe.applyOrder(slot, decision.order, decision.say,
-                decision.notes, false)
-              state.actions[slot] = action
+              probe.applyOrder(slot, decision.order, decision.say, decision.notes, false)
+              state.externalAttempts[slot][^1].accepted = true
+              state.externalAttempts[slot][^1].rejectionReason = none(string)
+              state.actions[slot] = decisionJson(decision)
         elif payload{"type"}.getStr() == "prompt":
           var prompt = payload{"prompt"}.getStr()
           if prompt.runeLen > MaxPromptLen:
@@ -532,12 +586,16 @@ proc websocketHandler(
             else: parseScriptKind(node.getStr())
           withLock stateLock:
             state.prompts[slot] = prompt
+            state.ready[slot] = true
             state.scripted[slot] = scripted
           echo "bullwhip: slot ", slot, " delivered a prompt (",
             prompt.len, " chars",
             (if scripted != skNone: ", scripted " & $scripted else: ""), ")"
       except CatchableError as error:
-        echo "bullwhip: ignoring bad player frame: ", error.msg
+        if recordedAttempt:
+          withLock stateLock:
+            state.externalAttempts[slot][^1].rejectionReason = some(error.msg)
+        echo "bullwhip: ignoring bad private player frame"
     of ErrorEvent:
       discard
     of CloseEvent:
@@ -581,13 +639,15 @@ proc runReplayServer*(runtimeConfig: RuntimeConfig) =
   var events: seq[GameEvent]
   for node in payload["events"]:
     events.add(eventFromJson(node))
+  var publicEvents = newJArray()
+  for event in events: publicEvents.add(publicEventJson(event))
   var enriched = %*{
     "type": "replay",
     "protocol": payload{"protocol"}.getStr("bullwhip.replay.v1"),
     "names": payload["names"],
     "policyNames": payload{"policyNames"},
     "config": payload["config"],
-    "events": payload["events"],
+    "events": publicEvents,
     "results": payload{"results"},
     "states": statesFromEvents(config, events)
   }
@@ -605,8 +665,10 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   state.sim = initSim(config)
   state.prompts = newSeq[string](config.players.len)
   state.external = newSeq[bool](config.players.len)
+  state.ready = newSeq[bool](config.players.len)
   state.awaiting = newSeq[bool](config.players.len)
   state.actions = newSeq[JsonNode](config.players.len)
+  state.externalAttempts = newSeq[seq[DecisionAttempt]](config.players.len)
   state.scripted = newSeq[ScriptKind](config.players.len)
   runtimeConfigGlobal = runtimeConfig
 

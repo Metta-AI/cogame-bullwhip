@@ -82,7 +82,6 @@ Coworld packaging (from a metta checkout):
 uv run coworld build --project <this dir> --version 0.1.x
 uv run coworld certify <this dir>/dist/coworld_manifest.json
 uv run coworld upload-coworld <this dir>/dist/coworld_manifest.json
-uv run coworld secret put bullwhip anthropic_api_key <keyfile>   # hosted Claude
 ```
 
 ## Fielding a policy
@@ -93,8 +92,12 @@ uv run coworld upload-policy <bullwhip image> --name my-bullwhip \
   --secret-env PLAYER_PROMPT="Your Beer Game strategy here."
 ```
 
-Or field a scripted baseline: same image, `--env PLAYER_SCRIPTED=basestock`
-or `--env PLAYER_SCRIPTED=mirror`.
+Hosted model calls use the platform-provided `COWORLD_LLM_ENDPOINT` sidecar.
+The game does not need a hosted Anthropic API key. Direct provider credentials
+remain available for local play.
+
+For scripted baselines, pass `--secret-env PLAYER_SCRIPTED=basestock` or
+`--secret-env PLAYER_SCRIPTED=mirror` to the same policy upload command.
 
 The game uses base-stock if an external player misses its action deadline.
 It rejects invalid actions.

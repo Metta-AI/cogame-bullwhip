@@ -4,7 +4,7 @@
 ## The base-stock bot must also actually absorb the demand step, or it is
 ## no partner worth beating.
 
-import std/[json, monotimes, strutils, times, unicode, unittest]
+import std/[json, monotimes, os, strutils, times, unicode, unittest]
 import bullwhip/[llm, server, sim]
 
 proc fixture(seed: int, weeks = 36): GameConfig =
@@ -78,6 +78,13 @@ suite "scripted baselines":
     check sim.weeksPlayed == 24
 
   test "decideAll falls back to scripted with no credentials":
+    var credentials: seq[(string, string)]
+    for key in ["COWORLD_LLM_ENDPOINT", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+        "AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_URI"]:
+      credentials.add((key, getEnv(key)))
+      putEnv(key, "")
+    defer:
+      for (key, value) in credentials: putEnv(key, value)
     let config = fixture(3, weeks = 8)
     let client = newLlmClient(config)
     check client.disabled
@@ -92,24 +99,20 @@ suite "scripted baselines":
       sim.applyOrder(seat, decisions[index].order, "", "", true)
     check sim.week == 1
 
-  test "model replies parse":
-    check parseDecision(parseJson("""{"order": 7}""")).order == 7
-    check parseDecision(parseJson("""{"order": "12"}""")).order == 12
-    check parseDecision(parseJson("""{"order": 6.6}""")).order == 7
-    check parseDecision(parseJson("""{"order": " 9 "}""")).order == 9
-    let full = parseDecision(parseJson(
-      """{"order": 5, "say": "demand looks like 8", "notes": "on order 13"}"""))
-    check full.order == 5
-    check full.say == "demand looks like 8"
-    check full.notes == "on order 13"
-    expect BullwhipError:
-      discard parseDecision(parseJson("""{"order": -1}"""))
-    expect BullwhipError:
-      discard parseDecision(parseJson("""{"order": 501}"""))
-    expect BullwhipError:
-      discard parseDecision(parseJson("""{"order": "lots"}"""))
-    expect BullwhipError:
-      discard parseDecision(parseJson("""{"notes": "no order"}"""))
+  test "model replies parse through the canonical typed validator":
+    let observation = observationJson(initSim(fixture(7)), 0)
+    for (text, expected) in [("{\"order\":7}", 7), ("{\"order\":\"12\"}", 12),
+        ("{\"order\":6.6}", 7), ("{\"order\":\" 9 \"}", 9)]:
+      let proposal = parseProposal(text, observation)
+      check proposal.kind == pkAccepted
+      check proposal.decision.order == expected
+    let full = parseProposal("{\"order\":5,\"say\":\"demand looks like 8\",\"notes\":\"on order 13\"}", observation)
+    check full.kind == pkAccepted
+    check full.decision.say == "demand looks like 8"
+    check full.decision.notes == "on order 13"
+    for text in ["{\"order\":-1}", "{\"order\":501}", "{\"order\":\"lots\"}",
+        "{\"notes\":\"no order\"}", "no JSON", "{not valid}", "{\"order\":\"Inf\"}"]:
+      check parseProposal(text, observation).kind == pkRejected
     var long = ""
     for index in 0 ..< 700:
       long.add("é")
@@ -125,7 +128,7 @@ suite "scripted baselines":
     for seat in sim.pendingSeats():
       sim.applyOrder(seat, 4, "hello from " & $seat, "", true)
     let retailer = sim.seatOf[0]
-    let text = sim.userPrompt(retailer, "operator says hi")
+    let text = userPrompt(observationJson(sim, retailer), "operator says hi")
     check "You are the RETAILER" in text
     check "operator says hi" in text
     check "hello from " & $sim.seatOf[1] in text
@@ -148,3 +151,44 @@ suite "scripted baselines":
     check not observation.hasKey("demand")
     check not observation.hasKey("stages")
     check observation["legal"]["orderMax"].getInt() == MaxOrder
+
+  test "hidden demand and other stages cannot change teacher or model inputs":
+    for seat in 0 ..< Seats:
+      var game = initSim(fixture(71, weeks = 8))
+      let observation = observationJson(game, seat)
+      let system = systemPrompt(observation)
+      let user = userPrompt(observation, "private operator")
+      let teacher = scriptedAction(game, seat, skBasestock)
+      let ownStage = game.roleOf[seat]
+      for stage in 0 ..< Stages:
+        if stage != ownStage:
+          game.stages[stage].inventory += 900
+          game.stages[stage].backlog += 700
+          game.history[0].stages[stage].incoming += 600
+          game.notes[game.seatOf[stage]] = "other private notes"
+      for index in 1 ..< game.demand.len: game.demand[index] += 500
+      let changed = observationJson(game, seat)
+      check changed == observation
+      check systemPrompt(changed) == system
+      check userPrompt(changed, "private operator") == user
+      check scriptedAction(game, seat, skBasestock) == teacher
+
+  test "public events redact notebooks while historical events remain readable":
+    var game = initSim(fixture(17, weeks = 8))
+    let seat = game.pendingSeats()[0]
+    game.applyOrder(seat, 4, "public neighbour message", "private notebook", false)
+    let event = game.events[^1]
+    check event.kind == evOrder
+    check event.eventToJson()["text"].getStr() == "private notebook"
+    let public = publicEventJson(event)
+    check not public.hasKey("text")
+    check public["say"].getStr() == "public neighbour message"
+    check eventFromJson(event.eventToJson()).text == "private notebook"
+
+  test "public live and reconstructed tables redact all private notebooks":
+    var sim = initSim(fixture(7))
+    sim.notes[0] = "private-notebook-sentinel"
+    let public = publicTableJson(sim)
+    check "private-notebook-sentinel" notin $public
+    for seat in public["seats"]: check not seat.hasKey("notes")
+    check observationJson(sim, 0)["notes"].getStr() == "private-notebook-sentinel"
