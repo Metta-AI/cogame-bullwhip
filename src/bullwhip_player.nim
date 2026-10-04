@@ -1,73 +1,65 @@
-## Bullwhip player: prompt or scripted decisions from seat observations.
-##
-## Connects to the game and acts on each redacted seat observation. The
-## operator prompt and scripted logic stay inside this policy.
-##
-## PLAYER_SCRIPTED=basestock (or 1) chooses the base-stock baseline;
-## PLAYER_SCRIPTED=mirror orders the incoming quantity.
-##
-## To field your own policy, reuse this image and set PLAYER_PROMPT:
-##   coworld upload-policy <bullwhip-image> --name my-bullwhip \
-##     --run /bin/bullwhip-player --secret-env PLAYER_PROMPT="<your strategy>"
+## Bullwhip reference player delivers one frozen prompt or scripted registration.
+## The game owns all native model requests and source-scripted order decisions.
 
 import
-  std/[json, options, os, strutils],
-  bullwhip/policy,
-  whisky
+  std/[json, math, monotimes, os, strutils, times],
+  bitworld/[native_stop, native_websocket],
+  bullwhip/policy
 
 when isMainModule:
+  installNativeStopHandlers()
   let url = getEnv("COWORLD_PLAYER_WS_URL")
   if url.len == 0:
     quit("COWORLD_PLAYER_WS_URL is not set", 1)
-  let scripted = getEnv("PLAYER_SCRIPTED").strip()
   var prompt = getEnv("PLAYER_PROMPT")
   if prompt.len == 0:
     prompt = DefaultOperatorPrompt
-
-  proc register(): string =
-    if scripted.len > 0:
-      $ %*{"type": "register", "control": "external"}
+  let scriptedEnv = getEnv("PLAYER_SCRIPTED").strip()
+  ## Scripted registrations select the game-owned private-view policy.
+  let scripted =
+    if scriptedEnv.len == 0 or scriptedEnv.toLowerAscii() in
+        ["0", "false", "no"]:
+      ""
+    elif scriptedEnv.toLowerAscii() in ["1", "true", "yes"]:
+      "basestock"
     else:
-      $ %*{"type": "prompt", "prompt": prompt, "scripted": ""}
+      scriptedEnv.toLowerAscii()
 
-  echo "bullwhip player: connecting to game"
-  let socket = newWebSocket(url)
-  socket.send(register())
-  echo "bullwhip player: registered (", prompt.len, " prompt chars",
-    (if scripted.len > 0: ", scripted " & scripted else: ""), ")"
-
-  while true:
-    let received = socket.receiveMessage()
-    if received.isNone:
-      echo "bullwhip player: connection closed, exiting"
-      break
-    let message = received.get()
-    if message.kind != TextMessage:
-      continue
-    let payload = parseJson(message.data)
-    if scripted.len > 0 and payload{"type"}.getStr() == "observation":
-      let observation = payload["observation"]
-      let order =
-        if scripted == "mirror": observation["seat"]["incoming"].getInt()
-        else: baseStockOrder(observation)
-      let action = %*{"order": order, "say": "", "notes": ""}
-      socket.send($ %*{"type": "action", "week": payload["week"],
-        "action": action})
-      continue
-    try:
-      case payload{"type"}.getStr()
+  let timeout = parseFloat(getEnv("COWORLD_TIMEOUT_SECONDS", "1200"))
+  if timeout <= 0 or classify(timeout) in {fcNan, fcInf, fcNegInf}:
+    quit("player timeout must be finite and positive", 1)
+  let started = getMonoTime()
+  let deadline = started + initDuration(nanoseconds = int64(timeout * 1_000_000_000))
+  let connection = connectNativeWebSocket(url,
+    min(deadline, started + initDuration(seconds = 30)), 16 * 1024 * 1024)
+  case connection.kind
+  of wsInterrupted, wsDeadline: quit(0)
+  of wsReady: discard
+  else: quit("player connection failed", 1)
+  let socket = connection.socket
+  var registered = false
+  try:
+    while true:
+      let received = receiveNativeText(socket, deadline)
+      case received.kind
+      of wsClosed, wsInterrupted, wsDeadline: break
+      of wsMessage: discard
+      else: raise newException(ValueError, "player transport failed")
+      let payload = parseJson(received.data)
+      if payload.kind != JObject or not payload.hasKey("type") or payload["type"].kind != JString:
+        raise newException(ValueError, "invalid player protocol packet")
+      case payload["type"].getStr()
       of "welcome":
-        echo "bullwhip player: seated at slot ",
-          payload{"slot"}.getInt(), " as ", payload{"name"}.getStr(),
-          " (", payload{"role"}.getStr(), ")"
-        ## Re-deliver the prompt after the welcome, in case the first send
-        ## raced the server's slot registration.
-        socket.send(register())
-      of "final":
-        echo "bullwhip player: final scores ", payload{"scores"}
-        break
-      else:
-        discard
-    except CatchableError as error:
-      echo "bullwhip player: ignoring bad frame: ", error.msg
-  socket.close()
+        if registered: raise newException(ValueError, "duplicate player welcome")
+        let registration = $ %*{"type": "prompt", "prompt": prompt,
+          "scripted": (if scripted.len > 0: %scripted else: %false)}
+        let sent = sendNativeText(socket, registration, deadline)
+        case sent.kind
+        of wsInterrupted, wsDeadline: break
+        of wsReady: registered = true
+        else: raise newException(ValueError, "player registration failed")
+      of "state": discard
+      of "final": break
+      else: raise newException(ValueError, "unexpected player protocol packet")
+  finally:
+    closeNativeWebSocket(socket)

@@ -6,6 +6,7 @@
 
 import std/[json, monotimes, os, strutils, times, unicode, unittest]
 import bullwhip/[llm, server, sim]
+import bitworld/decision_trajectory
 
 proc fixture(seed: int, weeks = 36): GameConfig =
   result = defaultGameConfig()
@@ -77,7 +78,7 @@ suite "scripted baselines":
     check sim.done
     check sim.weeksPlayed == 24
 
-  test "decideAll falls back to scripted with no credentials":
+  test "decideAll uses fallback when native endpoint is absent":
     var credentials: seq[(string, string)]
     for key in ["COWORLD_LLM_ENDPOINT", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
         "AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_URI"]:
@@ -91,7 +92,10 @@ suite "scripted baselines":
     var sim = initSim(config)
     let seats = sim.pendingSeats()
     let decisions = client.decideAll(sim, seats,
-      @["be bold", "", "", ""], @[skNone, skNone, skMirror, skNone])
+      @["be bold", "", "", ""], @[skNone, skNone, skMirror, skNone],
+      getMonoTime() + initDuration(seconds = 1),
+      proc(slot: int, attempt: DecisionAttempt) {.gcsafe.} =
+        doAssert false, "disabled native client must not start HTTP work")
     check decisions.len == Seats
     for index, seat in seats:
       let kind = if seat == 2: skMirror else: skBasestock

@@ -17,13 +17,12 @@ back as everyone's excess inventory. In the talk variant (default on) each
 seat may send one short, non-binding message a week to its two neighbours —
 honest forecasts or otherwise.
 
-The game sends a redacted observation to each externally controlled player
-and accepts one action per week. The two bundled scripted baselines use this
-interface; the game validates and applies the returned order. The
+The reference player registers one frozen prompt or a scripted baseline.
+The game owns native model calls and simultaneous weekly decisions. The
 `basestock` policy uses Sterman's anchor-and-adjust with full supply-line
-accounting; `mirror` orders what it received. Existing prompt policies keep
-their server-side Claude adapter so published policies continue to play.
-All paths use the same game rules, scoring, and replay.
+accounting; `mirror` orders what it received. Custom external players use
+[bullwhip.player.v3](docs/PROTOCOL.md), with the same private observation,
+prompt renderer, normal order parser, and engine rules.
 
 Seats play under **anonymous cog names** (Sprocket, Gizmo, …): policy
 display names never reach the agents' prompts, so nobody can meta-game
@@ -41,10 +40,10 @@ episode ends `complete` after `weeks` weeks (default 36, 4..60) or
 - `src/bullwhip/sim.nim` — pure rules: roles and demand from the seed, the
   weekly resolution, orders, messages, tallies, endings, replay derivation;
   shared by server, tests, and the wasm viewer
-- `src/bullwhip/llm.nim` — existing prompt adapter and game fallback
+- `src/bullwhip/llm.nim` — native model adapter and game fallback
 - `src/bullwhip/server.nim` — mummy HTTP/WS server (player, global, replay)
-- `src/bullwhip_player.nim` — the player observation/action loop
-- `src/bullwhip/policy.nim` — player-side base-stock decisions
+- `src/bullwhip_player.nim` — the bounded native WebSocket prompt registrar
+- `src/bullwhip/policy.nim` — shared private-view base-stock decisions
 - `client/` — shared canvas renderer + global/player/replay pages (the
   parley broadcast chrome around the conveyor and the seismograph)
 - `replay-viewer/` — static wasm replay viewer (`?replay=<url>`)
@@ -93,8 +92,9 @@ uv run coworld upload-policy <bullwhip image> --name my-bullwhip \
 ```
 
 Hosted model calls use the platform-provided `COWORLD_LLM_ENDPOINT` sidecar.
-The game does not need a hosted Anthropic API key. Direct provider credentials
-remain available for local play.
+`COWORLD_LLM_MODEL` selects the canonical model; `COWORLD_LLM_TEMPERATURE`
+is finite and in [0, 1]. Native calls consume one configured weekly deadline.
+Without an endpoint, the engine uses its explicit base-stock fallback.
 
 For scripted baselines, pass `--secret-env PLAYER_SCRIPTED=basestock` or
 `--secret-env PLAYER_SCRIPTED=mirror` to the same policy upload command.

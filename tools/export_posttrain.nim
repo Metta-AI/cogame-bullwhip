@@ -57,14 +57,9 @@ when isMainModule:
         doAssert decisionJson(parsed) == decisionJson(teacher)
         var attempt = newDecisionAttempt($week & "-" & $seat & "-teacher",
           "basestock-view", aoTeacher)
-        attempt.model = some("basestock-view")
-        attempt.modelIdentity = some(sourceRevision)
         attempt.prompt = %*[{"role": "system", "content": systemPrompt(observation)},
           {"role": "user", "content": userPrompt(observation, DefaultOperatorPrompt)}]
-        attempt.request = %*{"teacher": "basestock-view", "observation": observation}
-        attempt.rawResponse = %($completion)
         attempt.response = %($completion)
-        attempt.decoder = %*{"method": "deterministic"}
         attempt.parsedAction = decisionJson(parsed)
         attempt.accepted = true
         inc decisions
