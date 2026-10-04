@@ -7,3 +7,14 @@ private*/
 .coworld/
 dist/
 tmp/
+
+# Private provenance archives and isolated build outputs.
+replay-viewer/dist
+node_modules
+**/qualification*.json
+**/corpus
+**/dataset
+**/fixture_calls.json
+**/manifest.json
+proofs
+evidence

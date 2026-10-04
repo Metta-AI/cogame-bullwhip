@@ -16,7 +16,6 @@ type
     sampled*: bool        ## true once the budget cap has been applied
     turnDelayMs*: int
     playerConnectTimeoutSeconds*: float
-    model*: string
     maxOutputTokens*: int
     llmTimeoutSeconds*: int
 
@@ -58,7 +57,6 @@ proc defaultGameConfig*(): GameConfig =
     episodeTimeoutSeconds: 1200,
     turnDelayMs: 400,
     playerConnectTimeoutSeconds: 180,
-    model: "claude-sonnet-5",
     maxOutputTokens: 900,
     llmTimeoutSeconds: 60
   )
@@ -93,8 +91,6 @@ proc update*(config: var GameConfig, configJson: string) =
   if node.hasKey("player_connect_timeout_seconds"):
     config.playerConnectTimeoutSeconds =
       node["player_connect_timeout_seconds"].getFloat()
-  if node.hasKey("model"):
-    config.model = node["model"].getStr()
   if node.hasKey("maxOutputTokens"):
     config.maxOutputTokens = node["maxOutputTokens"].getInt()
   if node.hasKey("llmTimeoutSeconds"):

@@ -3,34 +3,19 @@
 ## this week's numbers, the neighbours' messages, notes) plus that seat's
 ## prompt and asks Claude what it orders (and says).
 ##
-## Decisions within a week are simultaneous by rule, so the four requests
-## go out as ONE parallel batch (curly.makeRequests); invalid replies are
-## retried as a smaller batch with a hint, and anything still failing falls
-## back to the scripted baseline.
-##
-## Credentials, in order of preference:
-##   COWORLD_LLM_ENDPOINT            - hosted sidecar
-##   Bedrock bearer token            - local play
-##   ANTHROPIC_API_KEY                - the key itself
-##   ANTHROPIC_API_KEY_URI            - a URI holding the key
-## With no credentials every decision falls back to the always-legal
-## scripted baseline immediately (no retries, no network waits) so offline
-## certification still completes - this fallback is load-bearing. The same
-## scripted bots are also fieldable policies: a player that registers as
-## scripted plays one deliberately, LLM or not.
+## Simultaneous native requests share one absolute phase deadline. Provider
+## credentials and direct provider transports are not part of this runtime.
 
 import
-  std/[json, math, options, os, parsejson, parseutils, streams, strutils, unicode],
-  bitworld/[runtime, decision_trajectory],
-  curly,
+  std/[base64, json, math, monotimes, options, os, parsejson, parseutils, sets, streams, strutils, tables, unicode],
+  bitworld/[decision_trajectory, native_http, native_stop],
+  native_batch,
   sim,
   view,
   policy
 
 const
-  AnthropicUrl = "https://api.anthropic.com/v1/messages"
   AnthropicVersion = "2023-06-01"
-  BedrockAnthropicVersion = "bedrock-2023-05-31"
 
 type
   ScriptKind* = enum
@@ -56,24 +41,12 @@ type
     of pkRejected:
       reason*: string
 
-  LlmTransport = enum
-    ltNone, ltSidecar, ltBedrock, ltAnthropic
-
   LlmClient* = ref object
-    curl: Curly
-    transport: LlmTransport
-    apiKey: string          ## anthropic transport
     sidecarEndpoint: string
-    bedrockEndpoint: string ## local Bedrock transport
-    bedrockModels: seq[string]  ## candidates, tried in order on denial
-    bedrockModel: int           ## index into bedrockModels
-    bedrockToken: string
-    model: string         ## direct-Anthropic transport only; Bedrock
-                          ## picks from bedrockModels instead
+    model: string
     maxOutputTokens: int
-    timeoutSeconds: int
     temperature: float
-    disabled*: bool   ## true once credentials are known-unavailable
+    disabled*: bool
 
 proc parseScriptKind*(text: string): ScriptKind =
   ## PLAYER_SCRIPTED values: "1"/"true"/"yes"/"basestock" play the
@@ -83,95 +56,18 @@ proc parseScriptKind*(text: string): ScriptKind =
   of "mirror", "passthrough", "pass-through": skMirror
   else: skNone
 
-proc resolveApiKey(): string =
-  result = getEnv("ANTHROPIC_API_KEY").strip()
-  if result.len > 0:
-    return
-  let uri = getEnv("ANTHROPIC_API_KEY_URI").strip()
-  if uri.len == 0:
-    return ""
-  try:
-    result = readCogameUri(uri, "ANTHROPIC_API_KEY_URI").strip()
-  except CatchableError as error:
-    echo "bullwhip llm: failed to fetch ANTHROPIC_API_KEY_URI: ", error.msg
-    result = ""
-
-proc bedrockModelIds(): seq[string] =
-  ## Bedrock inference-profile candidates, tried in order. BEDROCK_MODEL
-  ## pins a single id; without it, fall through this list — model access is
-  ## a per-account Marketplace subscription, so an id that works in one
-  ## account 403s in another. The config "model" field is NOT
-  ## consulted here: it applies to the direct-Anthropic transport
-  ## only, and the haiku-first ordering below is a shared-capacity
-  ## decision that trumps per-game preference.
-  let pinned = getEnv("BEDROCK_MODEL").strip()
-  if pinned.len > 0:
-    return @[pinned]
-  ## Haiku leads: hosted Bedrock capacity is shared account-wide and the
-  ## sonnet profiles run out of daily tokens first.
-  @[
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    "us.anthropic.claude-sonnet-4-6",
-    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-  ]
-
-proc tryNextBedrockModel(client: LlmClient, why: string): bool =
-  if client.transport != ltBedrock or
-      client.bedrockModel + 1 >= client.bedrockModels.len:
-    return false
-  client.bedrockModel.inc
-  echo "bullwhip llm: ", client.bedrockModels[client.bedrockModel - 1],
-    " unusable (", why, "); falling back to ",
-    client.bedrockModels[client.bedrockModel]
-  true
-
-proc bedrockUrl(client: LlmClient): string =
-  client.bedrockEndpoint & "/model/" &
-    client.bedrockModels[client.bedrockModel] & "/invoke"
-
 proc newLlmClient*(config: GameConfig): LlmClient =
   result = LlmClient(
-    model: config.model,
+    model: getEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5"),
+    sidecarEndpoint: getEnv("COWORLD_LLM_ENDPOINT").strip().strip(chars = {'/'}, leading = false),
     maxOutputTokens: config.maxOutputTokens,
-    timeoutSeconds: config.llmTimeoutSeconds,
-    temperature: parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "1"))
-  )
+    temperature: parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "1")))
   if classify(result.temperature) in {fcNan, fcInf, fcNegInf} or
       result.temperature < 0 or result.temperature > 1:
     raise newException(BullwhipError, "COWORLD_LLM_TEMPERATURE must be finite and in [0, 1]")
-  let sidecarEndpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
-  if sidecarEndpoint.len > 0:
-    result.transport = ltSidecar
-    result.sidecarEndpoint = sidecarEndpoint.strip(chars = {'/'}, leading = false)
-    result.model = getEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")
-    result.curl = newCurly()
-    return
-  let bedrockEndpoint = getEnv("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").strip()
-  let bedrockToken = getEnv("AWS_BEARER_TOKEN_BEDROCK").strip()
-  if bedrockEndpoint.len > 0 or bedrockToken.len > 0:
-    let region = getEnv("AWS_REGION",
-      getEnv("AWS_DEFAULT_REGION", "us-west-2"))
-    let endpoint =
-      if bedrockEndpoint.len > 0: bedrockEndpoint
-      else: "https://bedrock-runtime." & region & ".amazonaws.com"
-    result.transport = ltBedrock
-    result.bedrockEndpoint = endpoint.strip(chars = {'/'}, leading = false)
-    result.bedrockModels = bedrockModelIds()
-    result.bedrockToken = bedrockToken
-    result.curl = newCurly()
-    echo "bullwhip llm: bedrock transport, model ",
-      result.bedrockModels[result.bedrockModel],
-      ", url ", result.bedrockUrl
-    return
-  result.apiKey = resolveApiKey()
-  if result.apiKey.len > 0:
-    result.transport = ltAnthropic
-    result.curl = newCurly()
-    echo "bullwhip llm: anthropic transport, model ", result.model
-  else:
-    result.transport = ltNone
-    result.disabled = true
-    echo "bullwhip llm: no LLM credentials; using scripted fallback"
+  if result.model.len == 0 or result.maxOutputTokens <= 0:
+    raise newException(BullwhipError, "native model and positive token budget are required")
+  result.disabled = result.sidecarEndpoint.len == 0
 
 # ---- Scripted baselines -----------------------------------------------------
 
@@ -291,78 +187,160 @@ proc userPrompt*(view: JsonNode, prompt: string, retry = false): string =
       " characters (or \"\")" else: "") &
     "; notes at most " & $MaxNotesLen & " characters.")
 
-# ---- Anthropic / Bedrock transport ------------------------------------------
+# ---- Native transport -------------------------------------------------------
 
   if retry:
     result.add("\nYour previous reply was invalid. Respond with ONLY " &
       "the requested JSON object, with \"order\" a whole number 0.." &
       $MaxOrder & ".")
 
-proc requestFor(client: LlmClient, system, user: string, slot: int):
-    tuple[url: string, headers: HttpHeaders, body: string] =
-  var body = %*{
-    "max_tokens": client.maxOutputTokens,
-    "temperature": client.temperature,
-    "system": system,
-    "messages": [{"role": "user", "content": user}]
-  }
-  var headers: HttpHeaders
-  headers["content-type"] = "application/json"
-  if client.transport == ltSidecar and slot >= 0:
-    headers["X-Coworld-Player-Slot"] = $slot
-  if client.transport == ltBedrock:
-    body["anthropic_version"] = %BedrockAnthropicVersion
-    if client.bedrockToken.len > 0:
-      headers["authorization"] = "Bearer " & client.bedrockToken
-    result.url = client.bedrockUrl()
-  elif client.transport == ltSidecar:
-    body["model"] = %client.model
-    headers["anthropic-version"] = AnthropicVersion
-    result.url = client.sidecarEndpoint & "/v1/messages"
-  else:
-    body["model"] = %client.model
-    ## Only the Claude 5 / Opus tiers accept an effort setting; Haiku 4.5
-    ## rejects the whole request with a 400 if it is present.
-    if "haiku" notin client.model and "4-5" notin client.model:
-      body["output_config"] = %*{"effort": "low"}
-    headers["x-api-key"] = client.apiKey
-    headers["anthropic-version"] = AnthropicVersion
-    result.url = AnthropicUrl
-  result.headers = headers
-  result.body = $body
+proc requestFor(client: LlmClient, system, user: string, slot: int): NativeRequest =
+  if slot notin 0 ..< Seats:
+    raise newException(BullwhipError, "native seat is outside the game")
+  result.headers["content-type"] = "application/json"
+  result.headers["anthropic-version"] = AnthropicVersion
+  result.headers["X-Coworld-Player-Slot"] = $slot
+  result.url = client.sidecarEndpoint & "/v1/messages"
+  result.body = $(%*{"model": client.model, "max_tokens": client.maxOutputTokens,
+    "temperature": client.temperature, "system": system,
+    "messages": [{"role": "user", "content": user}]})
 
-proc textOf(client: LlmClient, response: Response, error, url: string):
-    string =
-  ## The text of one batched reply, or a BullwhipError describing why
-  ## there is none. Auth failures disable the client; model-access and
-  ## throttle failures rotate the Bedrock model for the next batch.
-  if error.len > 0:
-    raise newException(BullwhipError, "llm transport: " & error)
-  if response.code == 401 or response.code == 403:
-    let detail = response.body[0 .. min(response.body.high, 400)]
-    if "Model access is denied" in response.body and
-        client.tryNextBedrockModel("no model access"):
-      raise newException(BullwhipError,
-        "bedrock model access denied: " & detail)
+proc textOf(client: LlmClient, response: NativeHttpResponse,
+    evidence: var DecisionAttempt): string =
+  evidence.latencyMs = response.latencyMs
+  evidence.responseReaderJoined = response.responseReaderJoined
+  let observedResponse = response.httpStatus.isSome or response.headerBytes.len > 0 or response.bodyBytes.len > 0
+  if observedResponse:
+    evidence.responseBodyB64 = some(encode(response.bodyBytes))
+    evidence.responseHeadersB64 = some(encode(response.headerBytes))
+    evidence.responseComplete = some(response.transferComplete)
+    evidence.httpStatus = response.httpStatus
+    if validateUtf8(response.bodyBytes) == -1:
+      evidence.rawResponse = %response.bodyBytes
+  if validateUtf8(response.headerBytes) != -1:
+    raise newException(BullwhipError, "received HTTP headers are not valid UTF-8")
+  var responseHeaders: HttpHeaders
+  var receivedHeaders = initTable[string, string]()
+  var identityHeaders = initHashSet[string]()
+  for line in response.headerBytes.splitLines():
+    if line.startsWith("HTTP/"):
+      responseHeaders.setLen(0)
+      receivedHeaders.clear()
+      identityHeaders.clear()
+    elif line.len > 0:
+      let colon = line.find(':')
+      if colon <= 0:
+        raise newException(BullwhipError, "invalid received HTTP header")
+      let name = line[0 ..< colon]
+      let value = line[colon + 1 .. ^1].strip()
+      let normalized = name.toLowerAscii()
+      if normalized in ["request-id", "x-request-id", "x-softmax-llm-call-id",
+          "x-coworld-checkpoint-sha256", "x-coworld-tokenizer-sha256",
+          "x-coworld-chat-template-sha256"]:
+        if normalized in identityHeaders:
+          raise newException(BullwhipError, "duplicate received identity header")
+        identityHeaders.incl(normalized)
+      responseHeaders.add((name, value))
+      receivedHeaders[name] = value
+  if observedResponse:
+    evidence.responseHeaders = some(receivedHeaders)
+  if responseHeaders.contains("request-id") and responseHeaders.contains("x-request-id") and
+      responseHeaders["request-id"] != responseHeaders["x-request-id"]:
+    raise newException(BullwhipError, "conflicting received request identity headers")
+  for key in ["request-id", "x-request-id"]:
+    if responseHeaders.contains(key):
+      evidence.providerRequestId = some(responseHeaders[key])
+      break
+  for (header, field) in [
+      ("x-softmax-llm-call-id", "call"),
+      ("x-coworld-checkpoint-sha256", "model"),
+      ("x-coworld-tokenizer-sha256", "tokenizer"),
+      ("x-coworld-chat-template-sha256", "template")]:
+    if responseHeaders[header].len > 0:
+      case field
+      of "call":
+        let identity = responseHeaders[header]
+        if identity.len != 36:
+          raise newException(BullwhipError, "received platform call identity is not a UUID")
+        for index, character in identity:
+          if index in [8, 13, 18, 23]:
+            if character != '-':
+              raise newException(BullwhipError, "received platform call identity is not a UUID")
+          elif character notin {'0'..'9', 'a'..'f', 'A'..'F'}:
+            raise newException(BullwhipError, "received platform call identity is not a UUID")
+        evidence.platformCallId = some(identity)
+      of "model": evidence.modelIdentity = some(responseHeaders[header])
+      of "tokenizer": evidence.tokenizerIdentity = some(responseHeaders[header])
+      else: evidence.chatTemplateSha256 = some(responseHeaders[header])
+  if response.kind != nhComplete:
+    raise newException(BullwhipError, "native transport " & $response.kind)
+  let status = response.httpStatus.get()
+  if status == 401 or status == 403:
     client.disabled = true
-    raise newException(BullwhipError,
-      "llm auth failed (" & $response.code & ") at " & url & ": " & detail)
-  if response.code == 429:
-    let detail = response.body[0 .. min(response.body.high, 300)]
-    discard client.tryNextBedrockModel("throttled")
-    raise newException(BullwhipError, "llm throttled (429): " & detail)
-  if response.code < 200 or response.code >= 300:
-    raise newException(BullwhipError, "anthropic error " & $response.code &
-      ": " & response.body[0 .. min(response.body.high, 300)])
-  let payload = parseJson(response.body)
+    raise newException(BullwhipError, "native inference auth failed (" & $status & ")")
+  if status == 429:
+    raise newException(BullwhipError, "native inference throttled (429)")
+  if status < 200 or status >= 300:
+    raise newException(BullwhipError, "native inference error " & $status)
+  let payload = parseJson(response.bodyBytes)
+  if payload.kind != JObject or payload["model"].kind != JString or
+      payload["content"].kind != JArray:
+    raise newException(BullwhipError, "native response violates the completion schema")
+  evidence.model = some(payload["model"].getStr())
+  case payload["stop_reason"].kind
+  of JString: evidence.stopReason = some(payload["stop_reason"].getStr())
+  of JNull: discard
+  else: raise newException(BullwhipError, "native stop reason must be text or null")
+  if payload.hasKey("usage") and payload["usage"].kind != JNull:
+    let usage = payload["usage"]
+    if usage.kind != JObject or usage["input_tokens"].kind != JInt or
+        usage["output_tokens"].kind != JInt or usage["input_tokens"].getInt() < 0 or
+        usage["output_tokens"].getInt() < 0:
+      raise newException(BullwhipError, "native usage must contain nonnegative integer counts")
+    evidence.inputTokens = some(usage["input_tokens"].getInt())
+    evidence.outputTokens = some(usage["output_tokens"].getInt())
+  if payload.hasKey("sampling_evidence") and payload["sampling_evidence"].kind != JNull:
+    let sampling = payload["sampling_evidence"]
+    if sampling.kind != JObject or sampling["prompt_token_ids"].kind != JArray or
+        sampling["completion_token_ids"].kind != JArray or sampling["stop_reason"].kind != JString:
+      raise newException(BullwhipError, "native sampling evidence violates the token schema")
+    var promptIds, sampledIds: seq[int]
+    var probabilities: seq[float]
+    for token in sampling["prompt_token_ids"]:
+      if token.kind != JInt or token.getInt() < 0:
+        raise newException(BullwhipError, "native prompt token IDs must be nonnegative integers")
+      promptIds.add(token.getInt())
+    for token in sampling["completion_token_ids"]:
+      if token.kind != JInt or token.getInt() < 0:
+        raise newException(BullwhipError, "native sampled token IDs must be nonnegative integers")
+      sampledIds.add(token.getInt())
+    if sampling["behavior_log_probs"].kind != JNull:
+      if sampling["behavior_log_probs"].kind != JArray:
+        raise newException(BullwhipError, "native draw probabilities must be an array or null")
+      for probability in sampling["behavior_log_probs"]:
+        if probability.kind notin {JInt, JFloat} or
+            classify(probability.getFloat()) in {fcNan, fcInf, fcNegInf} or probability.getFloat() > 0:
+          raise newException(BullwhipError, "native draw probabilities must be finite nonpositive numbers")
+        probabilities.add(probability.getFloat())
+      if probabilities.len != sampledIds.len:
+        raise newException(BullwhipError, "native draw probabilities must match sampled token IDs")
+    evidence.promptTokenIds = some(promptIds)
+    evidence.sampledTokenIds = some(sampledIds)
+    if sampling["behavior_log_probs"].kind != JNull:
+      evidence.behaviorLogprobs = some(probabilities)
+    evidence.stopReason = some(sampling["stop_reason"].getStr())
   if payload{"stop_reason"}.getStr() == "refusal":
-    raise newException(BullwhipError, "anthropic refusal")
+    raise newException(BullwhipError, "native inference refusal")
   for contentBlock in payload["content"]:
-    if contentBlock{"type"}.getStr() == "text":
-      result.add(contentBlock{"text"}.getStr())
+    if contentBlock.kind != JObject or contentBlock["type"].kind != JString:
+      raise newException(BullwhipError, "native content block violates the completion schema")
+    if contentBlock["type"].getStr() == "text":
+      if contentBlock["text"].kind != JString:
+        raise newException(BullwhipError, "native text content must be text")
+      result.add(contentBlock["text"].getStr())
+  evidence.response = %result
   if payload{"stop_reason"}.getStr() == "max_tokens" and '{' notin result:
-    raise newException(BullwhipError, "reply cut off at max_tokens before " &
-      "any JSON: " & result[0 .. min(result.high, 160)].replace("\n", " "))
+    raise newException(BullwhipError, "native reply ended before a JSON action")
 
 proc cleanText*(text: string, limit: int): string =
   ## Text over the cap is cut at a rune boundary with the cut marked.
@@ -411,106 +389,64 @@ proc parseProposal*(text: string, observation: JsonNode): Proposal =
   if not observation["talk"].getBool(): decision.say = ""
   Proposal(kind: pkAccepted, decision: decision)
 
-proc decideAll*(
-  client: LlmClient,
-  sim: Sim,
-  seats: seq[int],
-  prompts: seq[string],
-  scripted: seq[ScriptKind]
-): seq[Decision] =
-  ## One decision per seat in `seats`, in order. Never raises: any failure
-  ## falls back to the scripted baseline so the episode always advances.
-  ## `prompts` and `scripted` are indexed by SEAT.
+proc decideAll*(client: LlmClient, sim: Sim, seats: seq[int],
+    prompts: seq[string], scripted: seq[ScriptKind], deadline: MonoTime,
+    beforeCall: proc(slot: int, attempt: DecisionAttempt) {.closure, gcsafe.}): seq[Decision] =
+  ## Every seat starts before any response is awaited. Repairs use remaining time.
   result = newSeq[Decision](seats.len)
-  var open: seq[int]     ## indexes into `seats` still undecided
+  var open: seq[int]
   for index, seat in seats:
-    let kind = scripted[seat]
-    if kind != skNone or client.disabled:
+    if scripted[seat] != skNone or client.disabled:
       result[index] = scriptedAction(sim, seat,
-        (if kind == skNone: skBasestock else: kind))
-    else:
-      open.add(index)
+        (if scripted[seat] == skNone: skBasestock else: scripted[seat]))
+    else: open.add(index)
   for attempt in 0 .. 1:
-    if open.len == 0 or client.disabled:
+    if open.len == 0 or client.disabled or interruptionRequested() or getMonoTime() >= deadline:
       break
-    var batch: RequestBatch
+    var batch: seq[NativeRequest]
     var started: seq[DecisionAttempt]
     for index in open:
       let seat = seats[index]
       let observation = observationJson(sim, seat)
+      let system = systemPrompt(observation)
       let user = userPrompt(observation, prompts[seat], retry = attempt > 0)
-      let request = client.requestFor(systemPrompt(observation), user, seat)
+      let request = client.requestFor(system, user, seat)
       var evidence = newDecisionAttempt($sim.week & "-" & $seat & "-" & $attempt,
         "prompt", aoModel)
-      evidence.prompt = %*[{"role": "system", "content": systemPrompt(observation)},
+      evidence.prompt = %*[{"role": "system", "content": system},
         {"role": "user", "content": user}]
       evidence.request = parseJson(request.body)
-      evidence.model = some(if client.transport == ltBedrock:
-        client.bedrockModels[client.bedrockModel] else: client.model)
+      evidence.model = some(client.model)
       evidence.decoder = %*{"temperature": client.temperature, "max_tokens": client.maxOutputTokens}
+      beforeCall(seat, evidence)
       started.add(evidence)
-      batch.post(request.url, request.headers, request.body, $index)
-    let responses = client.curl.makeRequests(batch, client.timeoutSeconds)
+      batch.add(request)
+    let responses = performNativeBatch(batch, deadline)
     var stillOpen: seq[int]
     for position, index in open:
       let seat = seats[index]
       var evidence = started[position]
-      let response = responses[position].response
-      evidence.rawResponse = %response.body
-      if response.headers.contains("X-Softmax-Llm-Call-Id"):
-        evidence.platformCallId = some(response.headers["X-Softmax-Llm-Call-Id"])
-      for header in ["X-Coworld-Checkpoint-Sha256", "X-Coworld-Tokenizer-Sha256",
-          "X-Coworld-Chat-Template-Sha256"]:
-        if response.headers.contains(header):
-          case header
-          of "X-Coworld-Checkpoint-Sha256": evidence.modelIdentity = some(response.headers[header])
-          of "X-Coworld-Tokenizer-Sha256": evidence.tokenizerIdentity = some(response.headers[header])
-          else: evidence.chatTemplateSha256 = some(response.headers[header])
       try:
-        let text = client.textOf(responses[position].response,
-          responses[position].error, batch[position].url)
-        evidence.response = %text
-        let payload = parseJson(response.body)
-        if payload.hasKey("model"): evidence.model = some(payload["model"].getStr())
-        evidence.stopReason = some(payload["stop_reason"].getStr())
-        if payload.hasKey("usage"):
-          evidence.inputTokens = some(payload["usage"]["input_tokens"].getInt())
-          evidence.outputTokens = some(payload["usage"]["output_tokens"].getInt())
-        if payload.hasKey("sampling_evidence") and payload["sampling_evidence"].kind != JNull:
-          let sampling = payload["sampling_evidence"]
-          var promptIds, sampledIds: seq[int]
-          var probabilities: seq[float]
-          for token in sampling["prompt_token_ids"]: promptIds.add(token.getInt())
-          for token in sampling["completion_token_ids"]: sampledIds.add(token.getInt())
-          evidence.promptTokenIds = some(promptIds)
-          evidence.sampledTokenIds = some(sampledIds)
-          if sampling["behavior_log_probs"].kind != JNull:
-            for probability in sampling["behavior_log_probs"]: probabilities.add(probability.getFloat())
-            evidence.behaviorLogprobs = some(probabilities)
-          evidence.stopReason = some(sampling["stop_reason"].getStr())
-          evidence.decoder["sampling_evidence"] = copy(sampling)
+        let text = client.textOf(responses[position].response, evidence)
         let proposal = parseProposal(text, observationJson(sim, seat))
         if proposal.kind == pkRejected:
           raise newException(BullwhipError, proposal.reason)
         var decision = proposal.decision
-        ## Reject illegal replies here so the retry carries the hint.
-        var probe = sim
-        probe.applyOrder(seat, decision.order, decision.say, decision.notes,
-          false)
-        evidence.accepted = true
         evidence.parsedAction = decisionJson(decision)
+        if interruptionRequested() or responses[position].receivedAt >= deadline:
+          raise newException(BullwhipError, "native receipt outside the decision window")
+        var probe = sim
+        probe.applyOrder(seat, decision.order, decision.say, decision.notes, false)
+        evidence.accepted = true
         decision.attempts = result[index].attempts & @[evidence]
         decision.selectedAttemptId = some(evidence.attemptId)
         result[index] = decision
       except CatchableError as error:
         evidence.rejectionReason = some(error.msg)
         result[index].attempts.add(evidence)
-        echo "bullwhip llm: seat ", seat, " attempt ", attempt, " failed"
         stillOpen.add(index)
     open = stillOpen
   for index in open:
-    let seat = seats[index]
-    echo "bullwhip llm: seat ", seat, " falling back to scripted decision"
     let attempts = result[index].attempts
-    result[index] = scriptedAction(sim, seat, skBasestock)
+    result[index] = scriptedAction(sim, seats[index], skBasestock)
     result[index].attempts = attempts
