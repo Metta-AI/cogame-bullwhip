@@ -260,6 +260,8 @@ canvas#table {
   z-index: 20;
 }
 
+#loading-retry { pointer-events: auto; }
+
 /* ---------- scorebug (second top-band row) ---------- */
 #scorebug {
   display: grid;
