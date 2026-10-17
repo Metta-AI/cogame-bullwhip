@@ -12,7 +12,10 @@ import
   native_batch,
   sim,
   view,
-  policy
+  policy,
+  prompts
+
+export prompts
 
 const
   AnthropicVersion = "2023-06-01"
@@ -105,7 +108,7 @@ proc historyTable(view: JsonNode): string =
       money(state["costWeek"].getFloat()) & " | " & order)
   lines.join("\n")
 
-proc systemPrompt*(view: JsonNode): string =
+proc systemPrompt*(view: JsonNode, config = defaultGameConfig()): string =
   let me = view["name"].getStr()
   let stage = view["stage"].getInt()
   let downstream =
@@ -115,6 +118,12 @@ proc systemPrompt*(view: JsonNode): string =
     if stage == Stages - 1: "your own PRODUCTION LINE (an order is a " &
       "production request; it lands in your inventory 2 weeks later)"
     else: view.stageName(stage + 1)
+  if config.selectedPromptVariant != pvCanonical:
+    let talk = if view["talk"].getBool():
+        "You may SAY one short message each week (max " & $MaxSayLen &
+        " chars). Only your two neighbours read it, next week. It is not binding and may or may not be honest."
+      else: ""
+    return renderVariantPrompt(config, me, RoleNames[stage].toUpperAscii(), downstream, upstream, talk)
   "You are " & me & ", the " & RoleNames[stage].toUpperAscii() &
     " in a four-stage beer supply chain: Retailer <- Wholesaler <- " &
     "Distributor <- Factory. Each stage is run by a different cog." &
@@ -187,12 +196,17 @@ proc userPrompt*(view: JsonNode, prompt: string, retry = false): string =
       " characters (or \"\")" else: "") &
     "; notes at most " & $MaxNotesLen & " characters.")
 
-# ---- Native transport -------------------------------------------------------
-
   if retry:
     result.add("\nYour previous reply was invalid. Respond with ONLY " &
       "the requested JSON object, with \"order\" a whole number 0.." &
       $MaxOrder & ".")
+
+proc decisionView*(sim: Sim, seat: int, prompt: string, retry = false): JsonNode =
+  result = observationJson(sim, seat)
+  result["prompt_template"] = promptMetadata(sim.config,
+    systemPrompt(result, sim.config), userPrompt(result, prompt, retry))
+
+# ---- Native transport -------------------------------------------------------
 
 proc requestFor(client: LlmClient, system, user: string, slot: int): NativeRequest =
   if slot notin 0 ..< Seats:
@@ -408,7 +422,7 @@ proc decideAll*(client: LlmClient, sim: Sim, seats: seq[int],
     for index in open:
       let seat = seats[index]
       let observation = observationJson(sim, seat)
-      let system = systemPrompt(observation)
+      let system = systemPrompt(observation, sim.config)
       let user = userPrompt(observation, prompts[seat], retry = attempt > 0)
       let request = client.requestFor(system, user, seat)
       var evidence = newDecisionAttempt($sim.week & "-" & $seat & "-" & $attempt,
@@ -417,7 +431,8 @@ proc decideAll*(client: LlmClient, sim: Sim, seats: seq[int],
         {"role": "user", "content": user}]
       evidence.request = parseJson(request.body)
       evidence.model = some(client.model)
-      evidence.decoder = %*{"temperature": client.temperature, "max_tokens": client.maxOutputTokens}
+      evidence.decoder = %*{"temperature": client.temperature, "max_tokens": client.maxOutputTokens,
+        "prompt_template": promptMetadata(sim.config, system, user)}
       beforeCall(seat, evidence)
       started.add(evidence)
       batch.add(request)

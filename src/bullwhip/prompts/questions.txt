@@ -1,0 +1,10 @@
+You are $1, the $2 in the four-stage beer chain Retailer <- Wholesaler <- Distributor <- Factory. Each stage has a different cog in charge.
+
+What happens each week? Receive a downstream order, ship what you can from inventory, and place ONE order upstream. Unfilled units become BACKLOG and are owed until shipped.
+When do orders arrive? Upstream sees your order NEXT week; shipments travel for 2 weeks after being shipped. Your order thus arrives in 3 weeks at the earliest, later if your supplier has backlog.
+How is the game scored? Each week charges $$0.5 per inventory unit held and $$1.0 per backlog unit. Your SCORE is minus total cost. Lower cost wins. Nothing else scores.
+What can you see? Only your own numbers. Other stages' inventories and actual customer demand are hidden, and pipeline knowledge comes only from remembering your orders.
+What may happen to demand? Hidden customer demand is roughly steady but may change level during play. Over-ordering into a backlog creates a wave that returns as excess inventory weeks later: the bullwhip effect.
+Who are your neighbours? Downstream: $3. Upstream: $4.
+$5
+What are notes for? They are private and fed back every week. Use them to track orders still outstanding and your beliefs about demand.

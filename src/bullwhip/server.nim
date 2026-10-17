@@ -261,9 +261,11 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
 proc issueExternalDecision(gs: var GameState, seat: int, retry: bool) =
   inc gs.decisionCounter
   let id = "bullwhip-" & $gs.currentWeek & "-" & $seat & "-" & $gs.decisionCounter
-  let observation = gs.currentObservations[seat]
-  let messages = %*[{"role": "system", "content": systemPrompt(observation)},
+  let observation = copy(gs.currentObservations[seat])
+  let messages = %*[{"role": "system", "content": systemPrompt(observation, gs.config)},
     {"role": "user", "content": userPrompt(observation, gs.prompts[seat], retry)}]
+  observation["prompt_template"] = promptMetadata(gs.config,
+    messages[0]["content"].getStr(), messages[1]["content"].getStr())
   gs.issuedSeats[id] = seat
   gs.issuedAt[id] = getMonoTime()
   gs.issuedObservations[id] = copy(observation)
@@ -469,7 +471,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
 
       let phaseDeadline = min(playDeadline, getMonoTime() + initDuration(seconds = config.llmTimeoutSeconds))
       var observations: seq[JsonNode]
-      for seat in seats: observations.add(observationJson(simCopy, seat))
+      for seat in seats: observations.add(decisionView(simCopy, seat, prompts[seat]))
 
       ## Every external policy receives the same seat observation and returns
       ## an action. Model choice, scripted logic, and prompts belong to that

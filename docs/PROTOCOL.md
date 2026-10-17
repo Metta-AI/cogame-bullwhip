@@ -43,3 +43,10 @@ Unexpected runtime failures produce private `failed` traces after owned joins.
 Private trajectory upload precedes public artifacts within one five-second
 cleanup deadline. Provider bytes, strategy prompts, notes, and native call IDs
 never appear in public replay or logs. Frame budget is 16 MiB.
+
+Private `decision.observation.prompt_template` identifies the episode rules
+bank, requested and resolved wording, prompt seed, and exact system/user
+SHA-256 hashes. These hashes refer to that issued frame, including its repair
+suffix when present. The JSONL training bridge exposes the same metadata in
+`semantic_view`, accepts `promptVariant`/`promptSeed` on reset, and rejects
+held-out evaluation wording. Selection never changes the action wire format.

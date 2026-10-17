@@ -117,8 +117,47 @@
           "type": "number",
           "minimum": 0,
           "default": 180
+        },
+        "promptVariant": {
+          "type": "string",
+          "enum": [
+            "canonical",
+            "plain",
+            "numbered",
+            "questions",
+            "reordered",
+            "heldout-briefing",
+            "heldout-reference",
+            "mixed"
+          ],
+          "default": "canonical",
+          "description": "Episode-stable rules wording; mixed selects only the five training templates."
+        },
+        "promptSeed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Independent wording seed. Required for mixed; never changes simulation randomness."
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "promptVariant"
+            ],
+            "properties": {
+              "promptVariant": {
+                "const": "mixed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "promptSeed"
+            ]
+          }
+        }
+      ]
     },
     "results_schema": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",

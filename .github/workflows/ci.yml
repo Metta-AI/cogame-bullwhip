@@ -35,7 +35,7 @@ jobs:
           echo '--path:"src"' >> nim.cfg
           nim c --parallelBuild:1 -r --hints:off tests/test_sim.nim
           nim c --parallelBuild:1 -r --hints:off tests/test_bot.nim
-          nim c --parallelBuild:1 -r --hints:off tests/test_hosted_llm.nim
+          nim c --parallelBuild:1 -r --hints:off -o:/tmp/bullwhip-hosted-llm tests/test_hosted_llm.nim
           nim c --parallelBuild:1 -r -d:release --hints:off tests/test_sim.nim
           nim c --parallelBuild:1 -r -d:release --hints:off tests/test_bot.nim
           nim c --parallelBuild:1 -d:release --hints:off -o:/tmp/bullwhip-game src/bullwhip.nim
@@ -45,10 +45,13 @@ jobs:
           nim c --parallelBuild:1 -d:release --hints:off -o:/tmp/bullwhip-native-batch tools/native_batch_probe.nim
           python3 tools/test_native_batch.py /tmp/bullwhip-native-batch /tmp/bullwhip-batch-proof
           export COWORLD_SOURCE_REVISION="$(git rev-parse HEAD)"
+          python3 tools/test_prompt_variants.py /tmp/bullwhip-bridge
+          python3 tools/test_prompt_export.py /tmp/bullwhip-export /tmp/bullwhip-wording-export-proof
           python3 tools/test_native_trajectory.py /tmp/bullwhip-game /tmp/bullwhip-player /tmp/bullwhip-whole-proof
           python3 tools/test_native_interruption.py /tmp/bullwhip-game /tmp/bullwhip-player /tmp/bullwhip-signals-proof
           python3 -m venv /tmp/bullwhip-fixture-venv
           /tmp/bullwhip-fixture-venv/bin/pip install websockets==15.0.1
+          /tmp/bullwhip-fixture-venv/bin/python tools/test_prompt_socket_games.py /tmp/bullwhip-game /tmp/bullwhip-wording-proof "$COWORLD_SOURCE_REVISION"
           /tmp/bullwhip-fixture-venv/bin/python tools/test_native_external.py /tmp/bullwhip-game /tmp/bullwhip-native-external-proof
           /tmp/bullwhip-fixture-venv/bin/python tools/test_external_lifecycle.py /tmp/bullwhip-game /tmp/bullwhip-external-proof /tmp/bullwhip-whole-proof/accepted/trajectory.jsonl
           /tmp/bullwhip-fixture-venv/bin/python tools/test_prompt_player.py /tmp/bullwhip-player /tmp/bullwhip-prompt-proof
