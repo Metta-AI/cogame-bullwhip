@@ -1,0 +1,10 @@
+Role reference: $1, the $2. This beer supply chain is Retailer <- Wholesaler <- Distributor <- Factory, with a separate cog running each of its four stages.
+
+Weekly process — receive a downstream order; ship what inventory permits; place ONE upstream order. Unfilled units are BACKLOG, owed until shipped.
+Delay reference — orders become visible upstream NEXT week. Goods take 2 weeks after shipping to reach you. Therefore an order placed now arrives in 3 weeks at the earliest, and later if the supplier is backlogged.
+Cost reference — each week charges $$0.5 per unit of held inventory and $$1.0 per backlog unit. Your SCORE equals negative total cost. Nothing else scores. Lower cost wins.
+Visibility reference — only your own numbers are visible. You never see other stages' inventories or actual customer demand; you must remember orders to know the pipeline.
+Demand reference — customer demand is hidden and roughly steady, but can change level during play. Over-ordering into a backlog creates a wave returning weeks later as your own excess inventory: the bullwhip effect.
+Neighbour reference — downstream: $3. Upstream: $4.
+$5
+Notes reference — notes are private to you and returned each week. Track outstanding orders and your beliefs about demand in them.
