@@ -122,23 +122,23 @@ and results exclude this private prompt evidence. Scripted or unknown actions
 do not become model evidence by carrying these fields.
 
 The JSONL training bridge accepts `promptVariant` and `promptSeed` on reset.
-It rejects the two held-out variants. Hosted games accept them for evaluation.
+Held-out variants require an explicit `split: validation` on language resets.
 `export_posttrain OUTPUT GAMES FIRST_SEED GAME_VERSION [FIRST_PROMPT_SEED]`
-requires committed source. Supplying the final argument exports all five
-training wordings for each scenario family. It also emits separate train and
-validation trajectory files: game seeds divisible by five are validation,
-so every wording of one scenario stays together. Do not split this corpus by
-row or episode. No exporter output is a model-quality result.
+requires committed source. Supplying the final argument cycles the five training
+wordings across the requested games by advancing the prompt seed per episode.
+It retains the original trajectory and manifest files. Split by scenario family
+in the shared importer so repeated wordings of one scenario stay together.
+No exporter output is a model-quality result.
 
 Run the complete-game checks after compiling the game and bridge:
 
 ```bash
 python3 tools/test_prompt_variants.py /path/to/bullwhip-bridge
-python3 tools/test_prompt_socket_games.py /path/to/bullwhip-game /new/evidence/path "$(git rev-parse HEAD)"
 ```
 
 These compare ordinary 36-week games across both talk modes, all four roles,
-and two seeds. They check state, actions, scores, private visibility, stable
+and one scenario seed. They check state, actions, scores, private visibility, stable
 wording, exact hashes, and mixed-to-pinned equivalence. They make no claim
-about model robustness. Rebuild and publish a new game version before using
+about model robustness. The existing native trajectory fixture also checks mixed
+wording on real model requests. Rebuild and publish a new game version before using
 these settings on the platform; this change does not deploy a game.

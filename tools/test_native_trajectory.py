@@ -96,6 +96,7 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                 "tokens": [f"t{s}" for s in range(4)],
                 "players": [{"name": f"p{s}"} for s in range(4)],
                 "seed": 7,
+                "promptVariant": "mixed", "promptSeed": 4,
                 "weeks": 4,
                 "talk": True,
                 "turnDelayMs": 0,
@@ -157,6 +158,7 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                             request, body = calls[call_id]
                             recorded.add(call_id)
                             assert attempt["request"] == request
+                            assert attempt["decoder"]["prompt_template"]["variant"] == "reordered"
                             assert json.loads(attempt["raw_response"]) == body
                             assert attempt["prompt"] == [
                                 {"role": "system", "content": request["system"]},

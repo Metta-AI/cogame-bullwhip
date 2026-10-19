@@ -84,7 +84,8 @@ when isMainModule:
       for key in ["promptVariant", "promptSeed"]:
         if request.hasKey(key): runtimeConfig[key] = request[key]
       config.update($runtimeConfig)
-      if config.selectedPromptVariant in {pvHeldoutBriefing, pvHeldoutReference}:
+      if config.selectedPromptVariant in {pvHeldoutBriefing, pvHeldoutReference} and
+          (not request.hasKey("split") or request["split"].getStr() != "validation"):
         raise newException(BullwhipError, "held-out wording cannot enter training")
       config = sampleEpisode(config)
       game = initSim(config)

@@ -19,8 +19,12 @@ for mixed in (False, True):
     subprocess.run(command, check=True, timeout=90)
     manifest = json.loads((output / "manifest.json").read_text())
     assert manifest["source_revision"] == revision
-    assert manifest["complete_episodes"] == (50 if mixed else 10)
-    expected_wordings = {"canonical", "plain", "numbered", "questions", "reordered"} if mixed else {"canonical"}
+    assert manifest["complete_episodes"] == 10
+    expected_wordings = (
+        {"canonical", "plain", "numbered", "questions", "reordered"}
+        if mixed
+        else {"canonical"}
+    )
     runs = {run["episode"]: run for run in manifest["runs"]}
     families = {}
     fingerprints = {}
@@ -46,11 +50,17 @@ for mixed in (False, True):
             assert attempt["parsed_action"] == event["executed_action"]
             assert event["selected_attempt_id"] == attempt["attempt_id"]
             for message in attempt["prompt"]:
-                assert metadata[message["role"] + "_sha256"].lower() == hashlib.sha256(
-                    message["content"].encode()
-                ).hexdigest()
+                assert (
+                    metadata[message["role"] + "_sha256"].lower()
+                    == hashlib.sha256(message["content"].encode()).hexdigest()
+                )
             digest = fingerprints.setdefault(episode, hashlib.sha256())
-            digest.update(json.dumps([observation, attempt["prompt"][1], event["executed_action"]], sort_keys=True).encode())
+            digest.update(
+                json.dumps(
+                    [observation, attempt["prompt"][1], event["executed_action"]],
+                    sort_keys=True,
+                ).encode()
+            )
             counts[episode] = counts.setdefault(episode, 0) + 1
         else:
             assert event["event_type"] == "episode" and event["status"] == "completed"
@@ -58,26 +68,15 @@ for mixed in (False, True):
             assert counts[episode] == 144
             outcome = fingerprints[episode].hexdigest(), event["participant_outcomes"]
             if mixed:
-                assert outcome == canonical[seed], "Wording changed a complete teacher trajectory"
+                assert outcome == canonical[seed], (
+                    "Wording changed a complete teacher trajectory"
+                )
             else:
                 canonical[seed] = outcome
             families.setdefault(seed, set()).add(run["prompt_variant"])
             completed.add(episode)
     assert completed == set(runs)
-    assert all(wordings == expected_wordings for wordings in families.values())
-    split_families = {}
-    split_episodes = set()
-    for split in ("train", "validation"):
-        selected = set()
-        for line in (output / f"{split}-trajectories.jsonl").open():
-            event = json.loads(line)
-            run = runs[event["episode_id"]]
-            assert run["split"] == split
-            if event["event_type"] == "episode":
-                selected.add(event["seed_family"])
-                split_episodes.add(event["episode_id"])
-        split_families[split] = selected
-    assert len(split_families["train"]) == 8 and len(split_families["validation"]) == 2
-    assert split_families["train"].isdisjoint(split_families["validation"])
-    assert split_episodes == completed
-print(json.dumps({"completed_games": 60, "scenario_families": 10, "mixed_wordings_per_family": 5}))
+    assert set().union(*families.values()) == expected_wordings
+    assert len(families) == 10
+    assert all(len(wordings) == 1 for wordings in families.values())
+print(json.dumps({"completed_games": 20, "scenario_families": 10}))

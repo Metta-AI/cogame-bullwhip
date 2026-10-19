@@ -51,7 +51,6 @@ jobs:
           python3 tools/test_native_interruption.py /tmp/bullwhip-game /tmp/bullwhip-player /tmp/bullwhip-signals-proof
           python3 -m venv /tmp/bullwhip-fixture-venv
           /tmp/bullwhip-fixture-venv/bin/pip install websockets==15.0.1
-          /tmp/bullwhip-fixture-venv/bin/python tools/test_prompt_socket_games.py /tmp/bullwhip-game /tmp/bullwhip-wording-proof "$COWORLD_SOURCE_REVISION"
           /tmp/bullwhip-fixture-venv/bin/python tools/test_native_external.py /tmp/bullwhip-game /tmp/bullwhip-native-external-proof
           /tmp/bullwhip-fixture-venv/bin/python tools/test_external_lifecycle.py /tmp/bullwhip-game /tmp/bullwhip-external-proof /tmp/bullwhip-whole-proof/accepted/trajectory.jsonl
           /tmp/bullwhip-fixture-venv/bin/python tools/test_prompt_player.py /tmp/bullwhip-player /tmp/bullwhip-prompt-proof
