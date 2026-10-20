@@ -2,6 +2,7 @@
 #   /bin/bullwhip         - the game server (default)
 #   /bin/bullwhip-player  - the prompt-delivery player
 FROM debian:bookworm-slim AS build
+SHELL ["/usr/bin/nice", "-n", "19", "/bin/sh", "-c"]
 
 RUN apt-get update && \
   apt-get install -y --no-install-recommends \
@@ -48,6 +49,7 @@ RUN rm -f nim.cfg && \
 
 # Run image.
 FROM debian:bookworm-slim
+SHELL ["/usr/bin/nice", "-n", "19", "/bin/sh", "-c"]
 
 RUN apt-get update && \
   apt-get install -y --no-install-recommends ca-certificates libcurl4 && \

@@ -24,8 +24,9 @@ proc runRequest(job: ptr NativeJob) {.thread.} =
   var headers: HttpHeaders
   for pair in request["headers"]:
     headers.add((pair[0].getStr(), pair[1].getStr()))
+  var requestControl: NativeRequestControl
   let response = performNativePost(request["url"].getStr(), headers,
-    request["body"].getStr(), job.deadline)
+    request["body"].getStr(), job.deadline, requestControl)
   job.receivedAt = getMonoTime()
   let wire = $(%*{
     "kind": $response.kind,
