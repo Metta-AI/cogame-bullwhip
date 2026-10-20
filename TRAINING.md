@@ -18,21 +18,51 @@ scores, immutable source commit, game version, and `bullwhip-<seed>` family.
 Existing output directories are refused. Output directories use mode 0700;
 private files use 0600. No split or supervised dataset rows are generated here.
 
-In the reviewed Metta source, qualify and export complete episodes, then use
-the shared application importer for the canonical seed-family split:
+Use the shared Coworld reader to validate complete episodes, then import them from a
+[posttraining-research](https://github.com/Metta-AI/posttraining-research) environment:
 
-```sh
-uv run coworld training export /tmp/bullwhip-standard/trajectories.jsonl \
-  /tmp/bullwhip-qualified --transport local
-uv run metta-posttrain export-hosted /tmp/bullwhip-qualified/episodes.jsonl \
-  /tmp/bullwhip-dataset
+```python
+from pathlib import Path
+
+from coworld.decision_trajectory import export_complete_episodes, read_trajectory_jsonl
+from metta_training.posttrain.hosted import export_hosted
+from metta_training.posttrain.hosted_receipts import HostedImportAuthority
+
+source = Path("/tmp/bullwhip-qualified/episodes.jsonl")
+export_complete_episodes(
+    read_trajectory_jsonl(Path("/tmp/bullwhip-standard/trajectories.jsonl")), source
+)
+# Independent review supplies this authority, bound to the exact qualified source bytes.
+authority = HostedImportAuthority.model_validate_json(
+    Path("/private/bullwhip-review.json").read_text()
+)
+export_hosted(
+    source,
+    Path("/tmp/bullwhip-dataset"),
+    target_policy="basestock-view",
+    authority=authority,
+)
 ```
 
-The shared importer retains generation evidence, selects accepted teacher or
-model targets, and marks the dataset unreviewed. Content review is required
-before training. These local teacher examples do not establish stronger league
-play, hosted platform model joins, or learner sampling evidence. Historical
-corpora keep their original source and split provenance.
+The teacher attempt policy is `basestock-view`; the source manifest's teacher label
+is `scripted-basestock`. The review must match the actual attempt policy, source
+revision, game version, and selected seats. Qualification alone does not authorize labels.
+The importer retains generation evidence and owns the scenario-family split. Inspect
+its `prompt_wordings` counts before using a mixed corpus; raw wording coverage is insufficient.
+For prompt seed zero, seeds 1–10 retain only `plain` and `questions` in training under
+the default 20% hash split. Seeds 1–20 retain all five training wordings, with 1,584
+training and 1,296 validation targets across all four seats. Other ranges and target
+filters need their own coverage check.
+
+```sh
+nim r -d:release --path:src tools/export_posttrain.nim \
+  /tmp/bullwhip-mixed 20 1 SOURCE_GAME_VERSION 0
+```
+
+Use that collection's `trajectories.jsonl` in the qualification step above.
+Provider-backed model targets additionally require authenticated platform receipts.
+These local teacher examples do not establish stronger league play or learner sampling evidence.
+Historical corpora keep their original source and split provenance.
 
 # Numeric reinforcement learning
 
