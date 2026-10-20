@@ -15,16 +15,15 @@ var operatorPrompt = DefaultOperatorPrompt
 var rejectedAttempts = 0
 
 proc decision(game: Sim, id, seat: int, retry = false): JsonNode =
-  let stage = game.roleOf[seat]
-  let state = game.stages[stage]
+  let observation = decisionView(game, seat, operatorPrompt, retry)
   result = %*{
     "kind": "decision", "game": "bullwhip", "decision_id": id,
     "seat": seat, "engine_seat": seat, "turn": game.week,
-    "semantic_view": observationJson(game, seat),
+    "semantic_view": observation,
     "inbox": [],
     "messages": [
-      {"role": "system", "content": systemPrompt(observationJson(game, seat))},
-      {"role": "user", "content": userPrompt(observationJson(game, seat), operatorPrompt, retry)}
+      {"role": "system", "content": systemPrompt(observation, game.config)},
+      {"role": "user", "content": userPrompt(observation, operatorPrompt, retry)}
     ],
     "speech_messages": [],
     "action_schema": {"type": "object", "required": ["order"],
@@ -82,7 +81,12 @@ when isMainModule:
       let runtimeConfig = copy(variantConfig)
       runtimeConfig["tokens"] = %*["t0", "t1", "t2", "t3"]
       runtimeConfig["seed"] = %seedOf(request["seed"].getStr())
+      for key in ["promptVariant", "promptSeed"]:
+        if request.hasKey(key): runtimeConfig[key] = request[key]
       config.update($runtimeConfig)
+      if config.selectedPromptVariant in {pvHeldoutBriefing, pvHeldoutReference} and
+          (not request.hasKey("split") or request["split"].getStr() != "validation"):
+        raise newException(BullwhipError, "held-out wording cannot enter training")
       config = sampleEpisode(config)
       game = initSim(config)
       id = 0

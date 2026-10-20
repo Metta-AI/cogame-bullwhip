@@ -101,3 +101,44 @@ For scripted baselines, pass `--secret-env PLAYER_SCRIPTED=basestock` or
 
 The game uses base-stock if an external player misses its action deadline.
 It rejects invalid actions.
+
+## Episode rules wording
+
+`promptVariant` selects `canonical` (default), `plain`, `numbered`, `questions`,
+`reordered`, `heldout-briefing`, `heldout-reference`, or `mixed`. Mixed selection
+requires an explicit nonnegative integer `promptSeed` and selects one of the
+first five templates by `promptSeed mod 5`. All seats keep that wording for the
+whole episode. The separate game seed still owns roles, demand, and aliases.
+Canonical rendering remains unchanged. Rule numbers, role-specific neighbours,
+communication rules, operator guidance, observations, and output requirements
+remain fixed across wording choices.
+
+The private decision observation contains `prompt_template`: bank
+`bullwhip-rules-v1`, requested selection, resolved variant, independent seed,
+and SHA-256 hashes of the exact system/user messages. External repair frames
+hash their repaired user message. Native attempts also retain their own exact
+pair metadata in `decoder.prompt_template`, including repairs. Public replay
+and results exclude this private prompt evidence. Scripted or unknown actions
+do not become model evidence by carrying these fields.
+
+The JSONL training bridge accepts `promptVariant` and `promptSeed` on reset.
+Held-out variants require an explicit `split: validation` on language resets.
+`export_posttrain OUTPUT GAMES FIRST_SEED GAME_VERSION [FIRST_PROMPT_SEED]`
+requires committed source. Supplying the final argument cycles the five training
+wordings across the requested games by advancing the prompt seed per episode.
+It retains the original trajectory and manifest files. Split by scenario family
+in the shared importer so repeated wordings of one scenario stay together.
+No exporter output is a model-quality result.
+
+Run the complete-game checks after compiling the game and bridge:
+
+```bash
+python3 tools/test_prompt_variants.py /path/to/bullwhip-bridge
+```
+
+These compare ordinary 36-week games across both talk modes, all four roles,
+and one scenario seed. They check state, actions, scores, private visibility, stable
+wording, exact hashes, and mixed-to-pinned equivalence. They make no claim
+about model robustness. The existing native trajectory fixture also checks mixed
+wording on real model requests. Rebuild and publish a new game version before using
+these settings on the platform; this change does not deploy a game.
