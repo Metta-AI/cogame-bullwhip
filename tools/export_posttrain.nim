@@ -1,5 +1,5 @@
 ## Export complete Bullwhip games as canonical private training evidence.
-## Usage: nim r --path:src tools/export_posttrain.nim OUTPUT GAMES FIRST_SEED GAME_VERSION
+## Usage: nim r --path:src tools/export_posttrain.nim OUTPUT GAMES FIRST_SEED GAME_VERSION [FIRST_PROMPT_SEED]
 
 import std/[json, options, os, osproc, strutils]
 import bullwhip/[sim, llm, policy, view]
@@ -7,13 +7,17 @@ import bitworld/decision_trajectory
 
 when isMainModule:
   let args = commandLineParams()
-  if args.len != 4:
-    quit("usage: export_posttrain OUTPUT GAMES FIRST_SEED GAME_VERSION", 1)
+  if args.len notin 4 .. 5:
+    quit("usage: export_posttrain OUTPUT GAMES FIRST_SEED GAME_VERSION [FIRST_PROMPT_SEED]", 1)
   let output = args[0]
   let games = parseInt(args[1])
   let firstSeed = parseInt(args[2])
   let gameVersion = args[3]
+  let mixed = args.len == 5
+  let firstPromptSeed = if mixed: parseInt(args[4]) else: 0
+  doAssert firstPromptSeed >= 0
   doAssert gameVersion.len > 0
+  doAssert execProcess("git status --porcelain").strip().len == 0, "commit source before exporting"
   if games < 10 or firstSeed < 1:
     quit("at least ten games and a positive first seed are required", 1)
   if dirExists(output) or fileExists(output):
@@ -26,17 +30,24 @@ when isMainModule:
   var
     trajectoryRows: seq[string]
     runs = newJArray()
-  for seed in firstSeed ..< firstSeed + games:
+  for index in 0 ..< games:
+    let seed = firstSeed + index
     var config = defaultGameConfig()
     let runtimeConfig = copy(variantConfig)
     runtimeConfig["tokens"] = newJArray()
     for seat in 0 ..< Seats:
       runtimeConfig["tokens"].add(%("t" & $seat))
     runtimeConfig["seed"] = %seed
+    if mixed:
+      runtimeConfig["promptVariant"] = %"mixed"
+      runtimeConfig["promptSeed"] = %(firstPromptSeed + index)
     config.update($runtimeConfig)
+    doAssert config.selectedPromptVariant notin {pvHeldoutBriefing, pvHeldoutReference},
+      "held-out wording cannot enter a teacher corpus"
     config = sampleEpisode(config)
     var sim = initSim(config)
-    let episodeId = "bullwhip-standard-" & $seed
+    let episodeId = "bullwhip-standard-" & $seed &
+      "-" & $config.promptVariant & "-" & $config.selectedPromptVariant & "-" & $config.promptSeed
     let trajectory = newDecisionTrajectory(episodeId, "bullwhip-" & $seed,
       "bullwhip", gameVersion, sourceRevision)
     var decisions = 0
@@ -44,7 +55,7 @@ when isMainModule:
       let seats = sim.pendingSeats()
       let week = sim.week
       var observations: seq[JsonNode]
-      for seat in seats: observations.add(observationJson(sim, seat))
+      for seat in seats: observations.add(decisionView(sim, seat, DefaultOperatorPrompt))
       for index, seat in seats:
         let observation = observations[index]
         let teacher = scriptedAction(observation, skBasestock)
@@ -57,7 +68,7 @@ when isMainModule:
         doAssert decisionJson(parsed) == decisionJson(teacher)
         var attempt = newDecisionAttempt($week & "-" & $seat & "-teacher",
           "basestock-view", aoTeacher)
-        attempt.prompt = %*[{"role": "system", "content": systemPrompt(observation)},
+        attempt.prompt = %*[{"role": "system", "content": systemPrompt(observation, config)},
           {"role": "user", "content": userPrompt(observation, DefaultOperatorPrompt)}]
         attempt.response = %($completion)
         attempt.parsedAction = decisionJson(parsed)
@@ -72,8 +83,11 @@ when isMainModule:
     var outcomes = newJObject()
     for seat in 0 ..< Seats: outcomes[$seat] = outcome["scores"][seat]
     trajectory.finish(esCompleted, outcome, outcomes)
-    trajectoryRows.add(trajectory.eventsJsonl().strip())
-    runs.add(%*{"seed": seed, "decisions": decisions,
+    let rows = trajectory.eventsJsonl().strip()
+    trajectoryRows.add(rows)
+    runs.add(%*{"seed": seed, "episode": episodeId,
+      "prompt_variant": $config.selectedPromptVariant, "prompt_seed": config.promptSeed,
+      "decisions": decisions,
       "scores": outcome["scores"], "chain_cost": outcome["chainCost"]})
   writePrivate(output / "trajectories.jsonl", trajectoryRows.join("\n") & "\n")
   writePrivate(output / "manifest.json", pretty(%*{
@@ -85,6 +99,7 @@ when isMainModule:
     "teacher": "scripted-basestock",
     "operator_prompt": DefaultOperatorPrompt,
     "complete_episodes": games,
+    "prompt_bank": PromptBankVersion,
     "decisions": games * variantConfig["weeks"].getInt() * Seats,
     "runs": runs
   }) & "\n")

@@ -1,0 +1,10 @@
+Assignment: you are $1, the $2. The beer supply chain has four stages, each operated by a different cog: Retailer <- Wholesaler <- Distributor <- Factory.
+
+Operations briefing: each week receive an order from downstream, ship as much inventory as possible, and make ONE upstream order. Unfilled units become BACKLOG, which remains owed until shipped.
+Timing briefing: an order is visible upstream NEXT week; shipments take 2 weeks after shipping to reach you. What you order now arrives no earlier than 3 weeks from now, and later if your supplier is backlogged.
+Performance briefing: every week costs $$0.5 per unit of inventory held and $$1.0 per backlog unit. SCORE is minus total cost. Lower cost wins, and nothing else scores.
+Information briefing: see only your own numbers, never other stages' inventories or actual customer demand. Remember your orders to know the pipeline. Customer demand is hidden, roughly steady, and may change level during the game.
+Risk briefing: over-ordering into backlog generates a wave that returns as your own excess inventory weeks later. This is the bullwhip effect.
+Connections: downstream is $3; upstream is $4.
+$5
+Your private notes return every week. Use them to remember outstanding orders and what you believe demand is.
