@@ -47,7 +47,7 @@ when isMainModule:
     config = sampleEpisode(config)
     var sim = initSim(config)
     let episodeId = "bullwhip-standard-" & $seed &
-      (if mixed: "-" & $config.selectedPromptVariant & "-" & $config.promptSeed else: "")
+      "-" & $config.promptVariant & "-" & $config.selectedPromptVariant & "-" & $config.promptSeed
     let trajectory = newDecisionTrajectory(episodeId, "bullwhip-" & $seed,
       "bullwhip", gameVersion, sourceRevision)
     var decisions = 0

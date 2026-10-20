@@ -107,3 +107,7 @@ text action parser and exact private prompt renderer. Invalid replies return
 the rendered retry decision. A second rejection consumes the same basestock
 fallback as the hosted prompt player. Numeric order choices remain a separate
 task. Public snapshots and replay events omit private notebooks.
+
+Episode IDs include requested selection, resolved wording, and prompt seed for
+both manifest-configured and mixed collections. Scenario families remain unchanged;
+the shared importer still owns splitting and training-wording coverage checks.
