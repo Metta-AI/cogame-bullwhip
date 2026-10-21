@@ -61,7 +61,8 @@ proc parseScriptKind*(text: string): ScriptKind =
 
 proc newLlmClient*(config: GameConfig): LlmClient =
   result = LlmClient(
-    model: getEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5"),
+    model: (if config.hostedModel.len > 0: config.hostedModel
+      else: getEnv("COWORLD_LLM_MODEL", "anthropic/claude-haiku-4.5")),
     sidecarEndpoint: getEnv("COWORLD_LLM_ENDPOINT").strip().strip(chars = {'/'}, leading = false),
     maxOutputTokens: config.maxOutputTokens,
     temperature: parseFloat(getEnv("COWORLD_LLM_TEMPERATURE", "1")))
@@ -70,6 +71,8 @@ proc newLlmClient*(config: GameConfig): LlmClient =
     raise newException(BullwhipError, "COWORLD_LLM_TEMPERATURE must be finite and in [0, 1]")
   if result.model.len == 0 or result.maxOutputTokens <= 0:
     raise newException(BullwhipError, "native model and positive token budget are required")
+  if config.hostedModel.len > 0 and result.sidecarEndpoint.len == 0:
+    raise newException(BullwhipError, "hostedModel requires COWORLD_LLM_ENDPOINT")
   result.disabled = result.sidecarEndpoint.len == 0
 
 # ---- Scripted baselines -----------------------------------------------------

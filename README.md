@@ -143,3 +143,13 @@ wording, exact hashes, and mixed-to-pinned equivalence. They make no claim
 about model robustness. The existing native trajectory fixture also checks mixed
 wording on real model requests. Rebuild and publish a new game version before using
 these settings on the platform; this change does not deploy a game.
+
+## Pinning a hosted teacher model
+
+Set `hostedModel` in the game configuration (or an Experience Request's
+`game_config_overrides`) to the exact canonical `provider/model` name. It overrides
+`COWORLD_LLM_MODEL` for native game-owned calls and requires a sidecar endpoint.
+Omit it or use an empty string to retain existing environment/default behavior.
+The direct-provider `model` field is unchanged. Provider allowlists still apply;
+this does not route game calls through a player's separately registered endpoint.
+Use captured request and receipt identities to verify the actual served model.
