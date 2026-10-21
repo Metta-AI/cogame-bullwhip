@@ -26,6 +26,7 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
             assert self.path == "/v1/messages"
             request = json.loads(self.rfile.read(int(self.headers["content-length"])))
             assert request["temperature"] == (1 if mode == "sampled" else 0)
+            assert request["model"] == "fixture/pinned"
             slot = int(self.headers["X-Coworld-Player-Slot"])
             text = (
                 "invalid JSON"
@@ -97,6 +98,7 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                 "tokens": [f"t{s}" for s in range(4)],
                 "players": [{"name": f"p{s}"} for s in range(4)],
                 "seed": 7,
+                "hostedModel": "fixture/pinned",
                 "promptVariant": "mixed", "promptSeed": 4,
                 "weeks": 4,
                 "talk": True,

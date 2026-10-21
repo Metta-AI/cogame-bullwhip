@@ -28,6 +28,7 @@ type
     sampled*: bool        ## true once the budget cap has been applied
     turnDelayMs*: int
     playerConnectTimeoutSeconds*: float
+    hostedModel*: string
     maxOutputTokens*: int
     llmTimeoutSeconds*: int
 
@@ -117,6 +118,15 @@ proc update*(config: var GameConfig, configJson: string) =
   if node.hasKey("player_connect_timeout_seconds"):
     config.playerConnectTimeoutSeconds =
       node["player_connect_timeout_seconds"].getFloat()
+  if node.hasKey("hostedModel"):
+    config.hostedModel = node["hostedModel"].getStr()
+    if config.hostedModel.len > 0:
+      let parts = config.hostedModel.split('/')
+      if parts.len != 2 or parts[0].len == 0 or parts[1].len == 0:
+        raise newException(BullwhipError, "hostedModel must be a canonical provider/model name")
+      for character in config.hostedModel:
+        if character notin {'a'..'z', 'A'..'Z', '0'..'9', '/', '.', '_', '-'}:
+          raise newException(BullwhipError, "hostedModel contains unsupported characters")
   if node.hasKey("maxOutputTokens"):
     config.maxOutputTokens = node["maxOutputTokens"].getInt()
   if node.hasKey("llmTimeoutSeconds"):
