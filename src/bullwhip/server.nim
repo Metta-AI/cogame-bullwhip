@@ -334,8 +334,18 @@ proc finishEpisode(runtimeConfig: RuntimeConfig, failed = false) =
               attempt.parsedAction = parsed
               attempt.accepted = accepted
               attempt.rejectionReason = rejection
+        var observation = copy(record.observation)
+        observation["prompt_attempts"] = newJArray()
+        for attempt in attempts:
+          if attempt.prompt.kind == JArray and attempt.prompt.len == 2 and
+              attempt.prompt[0]{"role"}.getStr() == "system" and
+              attempt.prompt[1]{"role"}.getStr() == "user":
+            observation["prompt_attempts"].add(%*{
+              "attempt_id": attempt.attemptId,
+              "prompt_template": promptMetadata(state.config,
+                attempt.prompt[0]["content"].getStr(), attempt.prompt[1]["content"].getStr())})
         state.trajectory.recordDecision(record.id, record.seat,
-          record.observation, attempts,
+          observation, attempts,
           record.decision.selectedAttemptId, decisionJson(record.decision),
           (if record.decision.selectedAttemptId.isSome: asAccepted else: asFallback),
           terminal = record.terminal, fallbackOrigin = (if record.decision.selectedAttemptId.isSome:

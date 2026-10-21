@@ -2,6 +2,7 @@
 
 import contextlib
 import http.server
+import hashlib
 import json
 import os
 import socket
@@ -158,7 +159,16 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                             request, body = calls[call_id]
                             recorded.add(call_id)
                             assert attempt["request"] == request
-                            assert attempt["decoder"]["prompt_template"]["variant"] == "reordered"
+                            assert attempt["decoder"] == {
+                                "temperature": request["temperature"], "max_tokens": request["max_tokens"]
+                            }
+                            metadata = next(
+                                item["prompt_template"] for item in decision["observation"]["prompt_attempts"]
+                                if item["attempt_id"] == attempt["attempt_id"]
+                            )
+                            assert metadata["variant"] == "reordered"
+                            assert metadata["system_sha256"] == hashlib.sha256(request["system"].encode()).hexdigest()
+                            assert metadata["user_sha256"] == hashlib.sha256(request["messages"][0]["content"].encode()).hexdigest()
                             assert json.loads(attempt["raw_response"]) == body
                             assert attempt["prompt"] == [
                                 {"role": "system", "content": request["system"]},

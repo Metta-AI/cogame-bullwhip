@@ -117,7 +117,8 @@ The private decision observation contains `prompt_template`: bank
 `bullwhip-rules-v1`, requested selection, resolved variant, independent seed,
 and SHA-256 hashes of the exact system/user messages. External repair frames
 hash their repaired user message. Native attempts also retain their own exact
-pair metadata in `decoder.prompt_template`, including repairs. Public replay
+pair metadata in `observation.prompt_attempts`, keyed by attempt ID, including
+repairs. `decoder` contains only settings actually sent to the serving endpoint. Public replay
 and results exclude this private prompt evidence. Scripted or unknown actions
 do not become model evidence by carrying these fields.
 

@@ -431,8 +431,7 @@ proc decideAll*(client: LlmClient, sim: Sim, seats: seq[int],
         {"role": "user", "content": user}]
       evidence.request = parseJson(request.body)
       evidence.model = some(client.model)
-      evidence.decoder = %*{"temperature": client.temperature, "max_tokens": client.maxOutputTokens,
-        "prompt_template": promptMetadata(sim.config, system, user)}
+      evidence.decoder = %*{"temperature": client.temperature, "max_tokens": client.maxOutputTokens}
       beforeCall(seat, evidence)
       started.add(evidence)
       batch.add(request)
