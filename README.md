@@ -153,3 +153,29 @@ Omit it or use an empty string to retain existing environment/default behavior.
 The direct-provider `model` field is unchanged. Provider allowlists still apply;
 this does not route game calls through a player's separately registered endpoint.
 Use captured request and receipt identities to verify the actual served model.
+
+## Private training scenario audit
+
+The offline training bridge accepts `{"kind":"audit_scenario"}` only when
+`METTA_SCENARIO_AUDIT=1` is explicitly set. Call `reset` first. The response
+uses `coworld.native-scenario-audit.v1` and records the requested seed, resolved
+31-bit engine seed, and an immutable scenario-family payload from initialization.
+The payload is private audit evidence: never include it in model prompts, training
+messages, or learner observations. Ordinary bridge responses do not include it.
+The request returns an error when disabled or before reset, without changing game
+state. It stays available after the terminal for split auditing.
+
+The family is the complete exogenous demand schedule, grouping different role
+assignments that share demand.
+Canonicalize this payload with the game name when assigning family partitions;
+a different seed string alone does not establish a different scenario. Keep
+binary, manifest and source hashes alongside the evidence. This command does
+not approve a teacher, a dataset, or a train/evaluation split.
+
+```sh
+python3 tools/test_scenario_audit.py /absolute/path/to/train-bridge
+```
+
+The system check compares an entire standard game with and without auditing,
+including every observation, teacher action and terminal score, and verifies
+that known engine-seed aliases share a family.
