@@ -11,6 +11,7 @@ root = Path(destination).resolve()
 root.mkdir(mode=0o700, parents=True, exist_ok=False)
 revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 canonical = {}
+physical_families = {}
 for mixed in (False, True):
     output = root / ("mixed" if mixed else "canonical")
     command = [binary, str(output), "10", "1", revision]
@@ -35,6 +36,15 @@ for mixed in (False, True):
         episode = event["episode_id"]
         run = runs[episode]
         seed = run["seed"]
+        scenario = run["scenario"]
+        assert list(scenario) == ["weeks", "talk", "demand"]
+        assert scenario["weeks"] == 36 and scenario["talk"] is True
+        assert len(scenario["demand"]) == 37
+        family = "bullwhip-demand-v1-" + hashlib.sha1(
+            json.dumps(scenario, separators=(",", ":")).encode()
+        ).hexdigest()
+        assert run["scenario_family"] == event["seed_family"] == family
+        physical_families.setdefault(family, set()).add(seed)
         assert event["source_revision"] == revision
         if event["event_type"] == "decision":
             assert event["action_status"] == "accepted"
@@ -64,7 +74,6 @@ for mixed in (False, True):
             counts[episode] = counts.setdefault(episode, 0) + 1
         else:
             assert event["event_type"] == "episode" and event["status"] == "completed"
-            assert event["seed_family"] == f"bullwhip-{seed}"
             assert counts[episode] == 144
             outcome = fingerprints[episode].hexdigest(), event["participant_outcomes"]
             if mixed:
@@ -79,4 +88,5 @@ for mixed in (False, True):
     assert set().union(*families.values()) == expected_wordings
     assert len(families) == 10
     assert all(len(wordings) == 1 for wordings in families.values())
-print(json.dumps({"completed_games": 20, "scenario_families": 10}))
+assert len(physical_families) < 10, "Distinct seeds with identical physical demand must share a split family"
+print(json.dumps({"completed_games": 20, "scenario_families": len(physical_families), "seed_aliases": 10}))

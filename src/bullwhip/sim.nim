@@ -8,7 +8,7 @@
 ## Everything random is drawn from the seed at `initSim`, so a replay
 ## re-derives the episode from the recorded order events alone.
 
-import std/[json, random, strutils, unicode], types
+import std/[json, random, sha1, strutils, unicode], types
 
 export types
 
@@ -157,6 +157,15 @@ proc initSim*(config: GameConfig): Sim =
   result.week = 0
   result.addEvent(blankEvent(evStart))
   result.openWeek()
+
+proc physicalScenario*(sim: Sim): JsonNode =
+  ## Private provenance only; never attach future demand to a player view.
+  %*{"weeks": sim.config.weeks, "talk": sim.config.talk, "demand": sim.demand}
+
+proc scenarioFamily*(sim: Sim): string =
+  ## Canonical compact JSON uses the field order in physicalScenario.
+  ## Seat aliases, role permutations, and prompt wording share a family.
+  "bullwhip-demand-v1-" & ($secureHash($sim.physicalScenario())).toLowerAscii()
 
 # ---- Queries ----------------------------------------------------------------
 

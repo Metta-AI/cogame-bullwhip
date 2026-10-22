@@ -919,7 +919,7 @@ proc runGameServer*(config: GameConfig, runtimeConfig: RuntimeConfig) =
   runtimeConfigGlobal = runtimeConfig
   if getEnv(CogameSaveTrajectoryUriEnv).len > 0:
     state.trajectory = newDecisionTrajectory(getEnv("COWORLD_EPISODE_ID"),
-      "bullwhip-" & $config.seed, "bullwhip", getEnv("COWORLD_GAME_VERSION"),
+      state.sim.scenarioFamily(), "bullwhip", getEnv("COWORLD_GAME_VERSION"),
       getEnv("COWORLD_SOURCE_REVISION"))
 
   let router = buildRouter(replayMode = false)
