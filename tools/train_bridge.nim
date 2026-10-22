@@ -70,6 +70,7 @@ when isMainModule:
   let variantConfig = manifest["variants"][0]["game_config"]
   var game: Sim
   var id = 0
+  var auditScenario: JsonNode
   var seat = 0
   while not stdin.endOfFile:
     let request = parseJson(stdin.readLine())
@@ -92,7 +93,19 @@ when isMainModule:
       id = 0
       rejectedAttempts = 0
       seat = game.pendingSeats()[0]
+      # Private split audit only: never attach hidden state to a decision.
+      let family = %*{"demand": game.demand}
+      auditScenario = %*{"protocol": "coworld.native-scenario-audit.v1",
+        "game": "bullwhip", "seed": request["seed"].getStr(),
+        "engine_seed": game.config.seed, "family": family}
       response = game.decision(id, seat)
+    of "audit_scenario":
+      if getEnv("METTA_SCENARIO_AUDIT") != "1":
+        response = %*{"kind": "error", "reason": "scenario audit is disabled"}
+      elif auditScenario.isNil:
+        response = %*{"kind": "error", "reason": "reset is required before scenario audit"}
+      else:
+        response = auditScenario
     of "encode":
       doAssert not game.done
       response = game.encoding(id, seat)
