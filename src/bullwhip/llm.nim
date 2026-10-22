@@ -379,11 +379,25 @@ proc parseProposal*(text: string, observation: JsonNode): Proposal =
   var parser: JsonParser
   parser.open(newStringStream(body), "player response")
   defer: parser.close()
+  # The event parser accepts consecutive roots; DOM conversion requires one.
+  var depth = 0
+  var complete = false
   while true:
     parser.next()
     if parser.kind == jsonError:
       return Proposal(kind: pkRejected, reason: parser.errorMsg())
-    if parser.kind == jsonEof: break
+    if parser.kind == jsonEof:
+      if not complete:
+        return Proposal(kind: pkRejected, reason: "incomplete JSON object")
+      break
+    if complete:
+      return Proposal(kind: pkRejected, reason: "expected one JSON object")
+    case parser.kind
+    of jsonObjectStart, jsonArrayStart: inc depth
+    of jsonObjectEnd, jsonArrayEnd:
+      dec depth
+      if depth == 0: complete = true
+    else: discard
   let payload = parseJson(body)
   if payload.kind != JObject or not payload.hasKey("order"):
     return Proposal(kind: pkRejected, reason: "no order in response")
