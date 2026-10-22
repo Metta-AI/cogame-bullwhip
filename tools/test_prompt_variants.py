@@ -90,7 +90,9 @@ for talk in (True, False):
                             {
                                 "kind": "step",
                                 "decision_id": observation["decision_id"],
-                                "response": "not JSON",
+                                "response": '{"order": 4}\n{"order": 5}'
+                                if talk
+                                else "not JSON",
                             }
                         )
                         assert rejected["kind"] == "rejected"
