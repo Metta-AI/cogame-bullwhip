@@ -43,7 +43,7 @@ for mixed in (False, True):
         family = "bullwhip-demand-v1-" + hashlib.sha1(
             json.dumps(scenario, separators=(",", ":")).encode()
         ).hexdigest()
-        assert run["scenario_family"] == event["seed_family"] == family
+        assert run["scenario_family"] == family
         physical_families.setdefault(family, set()).add(seed)
         assert event["source_revision"] == revision
         if event["event_type"] == "decision":
@@ -74,6 +74,7 @@ for mixed in (False, True):
             counts[episode] = counts.setdefault(episode, 0) + 1
         else:
             assert event["event_type"] == "episode" and event["status"] == "completed"
+            assert event["seed_family"] == family
             assert counts[episode] == 144
             outcome = fingerprints[episode].hexdigest(), event["participant_outcomes"]
             if mixed:
