@@ -7,7 +7,7 @@
 ## credentials and direct provider transports are not part of this runtime.
 
 import
-  std/[base64, json, math, monotimes, options, os, parsejson, parseutils, sets, streams, strutils, tables, unicode],
+  std/[base64, json, math, monotimes, options, os, parsejson, parseutils, sets, strutils, tables, unicode],
   bitworld/[decision_trajectory, native_http, native_stop],
   native_batch,
   sim,
@@ -376,15 +376,11 @@ proc parseProposal*(text: string, observation: JsonNode): Proposal =
   if first < 0 or last <= first:
     return Proposal(kind: pkRejected, reason: "no JSON object in response")
   let body = text[first .. last]
-  var parser: JsonParser
-  parser.open(newStringStream(body), "player response")
-  defer: parser.close()
-  while true:
-    parser.next()
-    if parser.kind == jsonError:
-      return Proposal(kind: pkRejected, reason: parser.errorMsg())
-    if parser.kind == jsonEof: break
-  let payload = parseJson(body)
+  var payload: JsonNode
+  try:
+    payload = parseJson(body)
+  except JsonParsingError as error:
+    return Proposal(kind: pkRejected, reason: error.msg)
   if payload.kind != JObject or not payload.hasKey("order"):
     return Proposal(kind: pkRejected, reason: "no order in response")
   let node = payload["order"]
