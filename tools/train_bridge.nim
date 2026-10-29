@@ -111,8 +111,23 @@ when isMainModule:
       response = game.encoding(id, seat)
     of "teacher":
       doAssert not game.done
-      let teacher = scriptedAction(observationJson(game, seat), skBasestock)
-      response = %*{"response": $(if languageMode: decisionJson(teacher) else: %*{"order": teacher.order})}
+      let explicit = request.hasKey("policy")
+      if explicit and request["policy"].kind != JString:
+        response = %*{"kind": "error", "reason": "teacher policy must be a string"}
+      else:
+        let selected = if explicit: request["policy"].getStr() else: "basestock"
+        if selected notin ["basestock", "mirror", "zero"]:
+          response = %*{"kind": "error", "reason": "unknown teacher policy"}
+        else:
+          let observation = observationJson(game, seat)
+          let teacher = case selected
+            of "mirror": scriptedAction(observation, skMirror)
+            of "zero": Decision(order: 0, scripted: true)
+            else: scriptedAction(observation, skBasestock)
+          response = %*{"response": $(if languageMode: decisionJson(teacher) else: %*{"order": teacher.order})}
+          if explicit:
+            response["policy"] = %selected
+            response["decision_id"] = %id
     of "step":
       doAssert not game.done and request["decision_id"].getInt() == id
       let view = observationJson(game, seat)
