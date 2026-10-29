@@ -115,7 +115,8 @@ suite "scripted baselines":
     check full.decision.say == "demand looks like 8"
     check full.decision.notes == "on order 13"
     for text in ["{\"order\":-1}", "{\"order\":501}", "{\"order\":\"lots\"}",
-        "{\"notes\":\"no order\"}", "no JSON", "{not valid}", "{\"order\":\"Inf\"}"]:
+        "{\"notes\":\"no order\"}", "no JSON", "{not valid}", "{\"order\":\"Inf\"}",
+        "{\"order\":15}\n{\"order\":4}\n{\"order\":9}"]:
       check parseProposal(text, observation).kind == pkRejected
     var long = ""
     for index in 0 ..< 700:
