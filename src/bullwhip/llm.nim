@@ -7,7 +7,7 @@
 ## credentials and direct provider transports are not part of this runtime.
 
 import
-  std/[base64, json, math, monotimes, options, os, parsejson, parseutils, sets, strutils, tables, unicode],
+  std/[base64, json, math, monotimes, options, os, parsejson, parseutils, sets, streams, strutils, tables, unicode],
   bitworld/[decision_trajectory, native_http, native_stop],
   native_batch,
   sim,
@@ -376,11 +376,29 @@ proc parseProposal*(text: string, observation: JsonNode): Proposal =
   if first < 0 or last <= first:
     return Proposal(kind: pkRejected, reason: "no JSON object in response")
   let body = text[first .. last]
-  var payload: JsonNode
-  try:
-    payload = parseJson(body)
-  except JsonParsingError as error:
-    return Proposal(kind: pkRejected, reason: error.msg)
+  var parser: JsonParser
+  parser.open(newStringStream(body), "player response")
+  defer: parser.close()
+  # The event parser accepts consecutive roots; DOM conversion requires one.
+  var depth = 0
+  var complete = false
+  while true:
+    parser.next()
+    if parser.kind == jsonError:
+      return Proposal(kind: pkRejected, reason: parser.errorMsg())
+    if parser.kind == jsonEof:
+      if not complete:
+        return Proposal(kind: pkRejected, reason: "incomplete JSON object")
+      break
+    if complete:
+      return Proposal(kind: pkRejected, reason: "expected one JSON object")
+    case parser.kind
+    of jsonObjectStart, jsonArrayStart: inc depth
+    of jsonObjectEnd, jsonArrayEnd:
+      dec depth
+      if depth == 0: complete = true
+    else: discard
+  let payload = parseJson(body)
   if payload.kind != JObject or not payload.hasKey("order"):
     return Proposal(kind: pkRejected, reason: "no order in response")
   let node = payload["order"]
