@@ -64,6 +64,12 @@ Provider-backed model targets additionally require authenticated platform receip
 These local teacher examples do not establish stronger league play or learner sampling evidence.
 Historical corpora keep their original source and split provenance.
 
+Native private-model calls use Chat Completions; public-model calls use Messages.
+Trajectories retain the actual request and response wire bodies. External model
+attempts must preserve the issued prompt pair in the selected protocol and bind
+their action to the received completion text. Local protocol fixtures use
+synthetic identities and do not provide hosted import or sampling authority.
+
 # Numeric reinforcement learning
 
 The JSONL bridge also accepts explicit teacher queries such as

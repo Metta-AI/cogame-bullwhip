@@ -204,8 +204,13 @@ proc retainExternalAttempt(gs: var GameState, seat: int, id: string,
     raise newException(BullwhipError, "external attempt must identify its issued model call")
   let prompt = gs.issuedPrompts[id]
   if attempt.prompt != prompt or attempt.request.kind != JObject or
-      attempt.request["system"] != prompt[0]["content"] or
-      attempt.request["messages"] != %*[prompt[1]]:
+      attempt.request["model"].kind != JString:
+    raise newException(BullwhipError, "model call rewrites the exact private prompt")
+  let promptMatches = if usesChatCompletions(attempt.request["model"].getStr()):
+      not attempt.request.hasKey("system") and attempt.request["messages"] == prompt
+    else:
+      attempt.request["system"] == prompt[0]["content"] and attempt.request["messages"] == %*[prompt[1]]
+  if not promptMatches:
     raise newException(BullwhipError, "model call rewrites the exact private prompt")
   if not gs.startedAttempts.hasKey(id):
     if completed:
@@ -742,16 +747,9 @@ proc websocketHandler(
                   attempt.httpStatus != some(200) or attempt.model.isNone or transportRejection.isSome:
                 raise newException(BullwhipError, "model action requires its complete successful native response")
               let served = parseJson(attempt.rawResponse.getStr())
-              var text = ""
-              if served.kind != JObject or served["content"].kind != JArray or served["model"] != %attempt.model.get():
+              if served.kind != JObject or served["model"] != %attempt.model.get():
                 raise newException(BullwhipError, "selected model differs from received native body")
-              for blockNode in served["content"]:
-                if blockNode.kind != JObject or blockNode["type"].kind != JString:
-                  raise newException(BullwhipError, "native content block violates completion schema")
-                if blockNode["type"].getStr() == "text":
-                  if blockNode["text"].kind != JString:
-                    raise newException(BullwhipError, "native text content must be text")
-                  text.add(blockNode["text"].getStr())
+              let text = completionText(served, attempt.request["model"].getStr())
               if %text != attempt.response:
                 raise newException(BullwhipError, "selected response differs from received native body")
               let sampled = parseProposal(attempt.response.getStr(), observation)

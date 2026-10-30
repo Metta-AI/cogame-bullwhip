@@ -211,16 +211,47 @@ proc decisionView*(sim: Sim, seat: int, prompt: string, retry = false): JsonNode
 
 # ---- Native transport -------------------------------------------------------
 
+proc usesChatCompletions*(model: string): bool =
+  ## Operator-managed and registered contributor models support Chat only.
+  model.startsWith("self-hosted/")
+
+proc completionText*(payload: JsonNode, requestedModel: string): string =
+  ## Native and externally controlled seats parse the same received wire body.
+  if usesChatCompletions(requestedModel):
+    if payload["choices"].kind != JArray or payload["choices"].len != 1:
+      raise newException(BullwhipError, "native Chat response requires one completion")
+    let choice = payload["choices"][0]
+    if choice.kind != JObject or choice["message"].kind != JObject or
+        choice["message"]["content"].kind != JString:
+      raise newException(BullwhipError, "native Chat response requires text content")
+    result = choice["message"]["content"].getStr()
+  else:
+    if payload["content"].kind != JArray:
+      raise newException(BullwhipError, "native Messages response requires content blocks")
+    for contentBlock in payload["content"]:
+      if contentBlock.kind != JObject or contentBlock["type"].kind != JString:
+        raise newException(BullwhipError, "native content block violates the completion schema")
+      if contentBlock["type"].getStr() == "text":
+        if contentBlock["text"].kind != JString:
+          raise newException(BullwhipError, "native text content must be text")
+        result.add(contentBlock["text"].getStr())
+
 proc requestFor(client: LlmClient, system, user: string, slot: int): NativeRequest =
   if slot notin 0 ..< Seats:
     raise newException(BullwhipError, "native seat is outside the game")
   result.headers["content-type"] = "application/json"
-  result.headers["anthropic-version"] = AnthropicVersion
   result.headers["X-Coworld-Player-Slot"] = $slot
-  result.url = client.sidecarEndpoint & "/v1/messages"
-  result.body = $(%*{"model": client.model, "max_tokens": client.maxOutputTokens,
-    "temperature": client.temperature, "system": system,
-    "messages": [{"role": "user", "content": user}]})
+  if usesChatCompletions(client.model):
+    result.url = client.sidecarEndpoint & "/v1/chat/completions"
+    result.body = $(%*{"model": client.model, "max_tokens": client.maxOutputTokens,
+      "temperature": client.temperature,
+      "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]})
+  else:
+    result.headers["anthropic-version"] = AnthropicVersion
+    result.url = client.sidecarEndpoint & "/v1/messages"
+    result.body = $(%*{"model": client.model, "max_tokens": client.maxOutputTokens,
+      "temperature": client.temperature, "system": system,
+      "messages": [{"role": "user", "content": user}]})
 
 proc textOf(client: LlmClient, response: NativeHttpResponse,
     evidence: var DecisionAttempt): string =
@@ -300,22 +331,26 @@ proc textOf(client: LlmClient, response: NativeHttpResponse,
   if status < 200 or status >= 300:
     raise newException(BullwhipError, "native inference error " & $status)
   let payload = parseJson(response.bodyBytes)
-  if payload.kind != JObject or payload["model"].kind != JString or
-      payload["content"].kind != JArray:
+  if payload.kind != JObject or payload["model"].kind != JString:
     raise newException(BullwhipError, "native response violates the completion schema")
   evidence.model = some(payload["model"].getStr())
-  case payload["stop_reason"].kind
-  of JString: evidence.stopReason = some(payload["stop_reason"].getStr())
+  result = completionText(payload, client.model)
+  let chat = usesChatCompletions(client.model)
+  let stopReason = if chat: payload["choices"][0]["finish_reason"] else: payload["stop_reason"]
+  case stopReason.kind
+  of JString: evidence.stopReason = some(stopReason.getStr())
   of JNull: discard
   else: raise newException(BullwhipError, "native stop reason must be text or null")
   if payload.hasKey("usage") and payload["usage"].kind != JNull:
     let usage = payload["usage"]
-    if usage.kind != JObject or usage["input_tokens"].kind != JInt or
-        usage["output_tokens"].kind != JInt or usage["input_tokens"].getInt() < 0 or
-        usage["output_tokens"].getInt() < 0:
+    let inputKey = if chat: "prompt_tokens" else: "input_tokens"
+    let outputKey = if chat: "completion_tokens" else: "output_tokens"
+    if usage.kind != JObject or usage[inputKey].kind != JInt or
+        usage[outputKey].kind != JInt or usage[inputKey].getInt() < 0 or
+        usage[outputKey].getInt() < 0:
       raise newException(BullwhipError, "native usage must contain nonnegative integer counts")
-    evidence.inputTokens = some(usage["input_tokens"].getInt())
-    evidence.outputTokens = some(usage["output_tokens"].getInt())
+    evidence.inputTokens = some(usage[inputKey].getInt())
+    evidence.outputTokens = some(usage[outputKey].getInt())
   if payload.hasKey("sampling_evidence") and payload["sampling_evidence"].kind != JNull:
     let sampling = payload["sampling_evidence"]
     if sampling.kind != JObject or sampling["prompt_token_ids"].kind != JArray or
@@ -346,17 +381,10 @@ proc textOf(client: LlmClient, response: NativeHttpResponse,
     if sampling["behavior_log_probs"].kind != JNull:
       evidence.behaviorLogprobs = some(probabilities)
     evidence.stopReason = some(sampling["stop_reason"].getStr())
-  if payload{"stop_reason"}.getStr() == "refusal":
+  if stopReason.getStr() in ["refusal", "content_filter"]:
     raise newException(BullwhipError, "native inference refusal")
-  for contentBlock in payload["content"]:
-    if contentBlock.kind != JObject or contentBlock["type"].kind != JString:
-      raise newException(BullwhipError, "native content block violates the completion schema")
-    if contentBlock["type"].getStr() == "text":
-      if contentBlock["text"].kind != JString:
-        raise newException(BullwhipError, "native text content must be text")
-      result.add(contentBlock["text"].getStr())
   evidence.response = %result
-  if payload{"stop_reason"}.getStr() == "max_tokens" and '{' notin result:
+  if stopReason.getStr() in ["max_tokens", "length"] and '{' notin result:
     raise newException(BullwhipError, "native reply ended before a JSON action")
 
 proc cleanText*(text: string, limit: int): string =
