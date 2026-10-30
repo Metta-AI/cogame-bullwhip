@@ -8,7 +8,6 @@ from metta_training.decision_environment import DecisionEncoding
 from metta_training.game import Terminal
 from metta_training.session import GameBridge
 
-
 BRIDGE = Path(sys.argv[1]).resolve()
 MANIFEST = Path(__file__).resolve().parents[1] / "coworld_manifest_template.json"
 
@@ -51,13 +50,17 @@ for seed in ("language-1", "language-2"):
         decisions = 1
         while not isinstance(observation, Terminal):
             sampled = bridge.teacher()
-            result = bridge.step(observation.decision_id, "```json\n" + sampled + "\n```")
+            result = bridge.step(
+                observation.decision_id, "```json\n" + sampled + "\n```"
+            )
             assert result.kind == "accepted"
             assert result.action == json.loads(sampled)
             observation = result.observation
             decisions += 1
         assert decisions == 4 * 36
-        print(seed, decisions, "complete language decisions including consumed fallback")
+        print(
+            seed, decisions, "complete language decisions including consumed fallback"
+        )
 
 
 # The JSON token scanner used to accept several complete roots, then parseJson
@@ -80,4 +83,8 @@ with GameBridge([str(BRIDGE), str(MANIFEST), "--language"]) as bridge:
         observation = accepted.observation
         decisions += 1
     assert decisions == 4 * 36
-    print("language-multiple-json-roots", decisions, "rejections repaired without fallback")
+    print(
+        "language-multiple-json-roots",
+        decisions,
+        "rejections repaired without fallback",
+    )

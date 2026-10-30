@@ -14,7 +14,15 @@ renderer, teacher policy, and typed action parser drive runtime and export.
 The published player, exporter, and language bridge use the same default
 operator strategy; custom bridge strategies require an explicit argument.
 Each trajectory includes every teacher proposal, applied action, terminal
-scores, immutable source commit, game version, and `bullwhip-<seed>` family.
+scores, immutable source commit, game version, and a physical-demand family.
+The family is `bullwhip-demand-v1-<sha1>` over compact UTF-8 JSON with
+ordered fields `weeks`, `talk`, and `demand` (including terminal-week demand).
+It excludes seed, seat aliases, role permutation, prompt wording, and prompt seed.
+Equivalent demand schedules therefore remain in one split across different seeds.
+The private export manifest retains the exact family input for independent hashing.
+The native server and exporter call the same simulator-owned family function.
+Historical seed-based trajectories remain historical evidence and must not be
+admitted as physically disjoint train/validation data.
 Existing output directories are refused. Output directories use mode 0700;
 private files use 0600. No split or supervised dataset rows are generated here.
 

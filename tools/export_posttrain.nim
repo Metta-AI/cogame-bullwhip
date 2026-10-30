@@ -48,7 +48,7 @@ when isMainModule:
     var sim = initSim(config)
     let episodeId = "bullwhip-standard-" & $seed &
       "-" & $config.promptVariant & "-" & $config.selectedPromptVariant & "-" & $config.promptSeed
-    let trajectory = newDecisionTrajectory(episodeId, "bullwhip-" & $seed,
+    let trajectory = newDecisionTrajectory(episodeId, sim.scenarioFamily(),
       "bullwhip", gameVersion, sourceRevision)
     var decisions = 0
     while not sim.done:
@@ -86,6 +86,7 @@ when isMainModule:
     let rows = trajectory.eventsJsonl().strip()
     trajectoryRows.add(rows)
     runs.add(%*{"seed": seed, "episode": episodeId,
+      "scenario": sim.physicalScenario(), "scenario_family": sim.scenarioFamily(),
       "prompt_variant": $config.selectedPromptVariant, "prompt_seed": config.promptSeed,
       "decisions": decisions,
       "scores": outcome["scores"], "chain_cost": outcome["chainCost"]})
