@@ -1,8 +1,8 @@
-"""Run complete native socket games against a local Messages fixture; no paid calls."""
+"""Run complete native socket games against local protocol fixtures; no paid calls."""
 
 import contextlib
-import http.server
 import hashlib
+import http.server
 import json
 import os
 import socket
@@ -16,17 +16,26 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GAME, PLAYER = (str(Path(arg).resolve()) for arg in sys.argv[1:3])
-for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "provider-error"):
+for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "provider-error", "private-chat"):
     if os.environ.get("BULLWHIP_NATIVE_FIXTURE_MODE") and mode != os.environ["BULLWHIP_NATIVE_FIXTURE_MODE"]:
         continue
     calls = {}
+    unexpected_paths = []
+    weeks = 36 if mode == "private-chat" else 4
 
-    class Messages(http.server.BaseHTTPRequestHandler):
-        def do_POST(self):
-            assert self.path == "/v1/messages"
+    class NativeProvider(http.server.BaseHTTPRequestHandler):
+        def do_POST(self, mode=mode, calls=calls, unexpected_paths=unexpected_paths):
             request = json.loads(self.rfile.read(int(self.headers["content-length"])))
-            assert request["temperature"] == (1 if mode == "sampled" else 0)
-            assert request["model"] == "fixture/pinned"
+            if mode == "private-chat" and self.path != "/v1/chat/completions":
+                unexpected_paths.append(self.path)
+                self.send_error(405, "Private models require Chat Completions")
+                return
+            assert self.path == ("/v1/chat/completions" if mode == "private-chat" else "/v1/messages")
+            assert request["temperature"] == (1 if mode in {"sampled", "private-chat"} else 0)
+            assert request["model"] == ("self-hosted/fixture-pinned" if mode == "private-chat" else "fixture/pinned")
+            if mode == "private-chat":
+                assert request["max_tokens"] == 900
+                assert [message["role"] for message in request["messages"]] == ["system", "user"]
             slot = int(self.headers["X-Coworld-Player-Slot"])
             text = (
                 "invalid JSON"
@@ -41,6 +50,15 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                 "stop_reason": "end_turn",
                 "usage": {"input_tokens": 10, "output_tokens": 5},
             }
+            if mode == "private-chat":
+                body = {
+                    "id": "chatcmpl_" + call_id,
+                    "model": "fixture/served",
+                    "choices": [
+                        {"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "length"}
+                    ],
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+                }
             if mode in {"sampled", "greedy-tokens"}:
                 body["sampling_evidence"] = {
                     "policy_revision": "a" * 64,
@@ -79,7 +97,7 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
         def log_message(self, *_args):
             pass
 
-    provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Messages)
+    provider = http.server.ThreadingHTTPServer(("127.0.0.1", 0), NativeProvider)
     provider_owner = threading.Thread(target=provider.serve_forever)
     provider_owner.start()
     try:
@@ -98,14 +116,17 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                 "tokens": [f"t{s}" for s in range(4)],
                 "players": [{"name": f"p{s}"} for s in range(4)],
                 "seed": 7,
-                "hostedModel": "fixture/pinned",
-                "promptVariant": "mixed", "promptSeed": 4,
-                "weeks": 4,
+                "hostedModel": "self-hosted/fixture-pinned" if mode == "private-chat" else "fixture/pinned",
+                "promptVariant": "mixed",
+                "promptSeed": 4,
+                "weeks": weeks,
                 "talk": True,
-                "turnDelayMs": 0,
+                "turnDelayMs": 400 if mode == "private-chat" else 0,
                 "player_connect_timeout_seconds": 5,
                 "llmTimeoutSeconds": 5,
             }
+            if mode == "private-chat":
+                config["maxOutputTokens"] = 900
             (output / "config.json").write_text(json.dumps(config))
             env = {
                 **os.environ,
@@ -124,7 +145,7 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                 ),
                 "COWORLD_LLM_ENDPOINT": f"http://127.0.0.1:{provider.server_port}",
                 "COWORLD_LLM_MODEL": "fixture/requested",
-                "COWORLD_LLM_TEMPERATURE": "1" if mode == "sampled" else "0",
+                "COWORLD_LLM_TEMPERATURE": "1" if mode in {"sampled", "private-chat"} else "0",
                 "PLAYER_PROMPT": "private-strategy-fixture",
                 "PLAYER_SCRIPTED": "",
             }
@@ -148,9 +169,10 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                         processes.append(subprocess.Popen([PLAYER], cwd=ROOT, env=player_env, stdout=log, stderr=log))
                     for process in processes:
                         assert process.wait(timeout=40) == 0, (output / "game.log").read_text()
+                    assert not unexpected_paths, unexpected_paths[:2]
                     events = [json.loads(line) for line in (output / "trajectory.jsonl").read_text().splitlines()]
-                    assert len(events[:-1]) == 16 and events[-1]["status"] == "completed"
-                    assert events[-1]["outcome"]["weeks"] == 4
+                    assert len(events[:-1]) == 4 * weeks and events[-1]["status"] == "completed"
+                    assert events[-1]["outcome"]["weeks"] == weeks
                     recorded = set()
                     fallback = 0
                     for decision in events[:-1]:
@@ -162,20 +184,34 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                             recorded.add(call_id)
                             assert attempt["request"] == request
                             assert attempt["decoder"] == {
-                                "temperature": request["temperature"], "max_tokens": request["max_tokens"]
+                                "temperature": request["temperature"],
+                                "max_tokens": request["max_tokens"],
                             }
                             metadata = next(
-                                item["prompt_template"] for item in decision["observation"]["prompt_attempts"]
+                                item["prompt_template"]
+                                for item in decision["observation"]["prompt_attempts"]
                                 if item["attempt_id"] == attempt["attempt_id"]
                             )
                             assert metadata["variant"] == "reordered"
-                            assert metadata["system_sha256"] == hashlib.sha256(request["system"].encode()).hexdigest()
-                            assert metadata["user_sha256"] == hashlib.sha256(request["messages"][0]["content"].encode()).hexdigest()
+                            messages = (
+                                request["messages"]
+                                if mode == "private-chat"
+                                else [
+                                    {"role": "system", "content": request["system"]},
+                                    *request["messages"],
+                                ]
+                            )
+                            assert (
+                                metadata["system_sha256"] == hashlib.sha256(messages[0]["content"].encode()).hexdigest()
+                            )
+                            assert (
+                                metadata["user_sha256"] == hashlib.sha256(messages[1]["content"].encode()).hexdigest()
+                            )
                             assert json.loads(attempt["raw_response"]) == body
-                            assert attempt["prompt"] == [
-                                {"role": "system", "content": request["system"]},
-                                *request["messages"],
-                            ]
+                            assert attempt["prompt"] == messages
+                            if mode == "private-chat":
+                                assert attempt["stop_reason"] == "length"
+                                assert attempt["input_tokens"] == 10 and attempt["output_tokens"] == 5
                             if attempt["accepted"]:
                                 assert attempt["model"] == "fixture/served"
                                 assert attempt["parsed_action"] == decision["executed_action"]
@@ -214,7 +250,7 @@ for mode in ("accepted", "invalid", "sampled", "greedy-null", "greedy-tokens", "
                         )
                     )
                     archive.chmod(0o600)
-                    print(mode, "16 decisions", len(recorded), "native fixture joins", flush=True)
+                    print(mode, 4 * weeks, "decisions", len(recorded), "native fixture joins", flush=True)
                 finally:
                     for process in processes:
                         if process.poll() is None:

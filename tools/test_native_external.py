@@ -4,16 +4,16 @@ Sampling and platform IDs are fixture data with zero serving receipt authority.
 """
 
 import asyncio
-import contextlib
 import base64
+import contextlib
 import http.server
-import threading
 import json
 import os
 import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -54,13 +54,20 @@ NULL_FIELDS = (
 class NativeFixture(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         request = json.loads(self.rfile.read(int(self.headers["content-length"])))
-        assert self.path == "/v1/messages" and self.headers["X-Coworld-Player-Slot"] in {"0", "1", "2", "3"}
+        chat = request["model"].startswith("self-hosted/")
+        assert self.path == ("/v1/chat/completions" if chat else "/v1/messages")
+        assert self.headers["X-Coworld-Player-Slot"] in {"0", "1", "2", "3"}
         action = {"order": 9, "say": "", "notes": ""}
         payload = {
             "model": "fixture/served",
             "stop_reason": "end_turn",
             "content": [{"type": "text", "text": json.dumps(action)}],
         }
+        if chat:
+            payload = {
+                "model": "fixture/served",
+                "choices": [{"message": {"role": "assistant", "content": json.dumps(action)}, "finish_reason": "stop"}],
+            }
         if request["temperature"] == 1:
             payload["sampling_evidence"] = {
                 "policy_revision": "a" * 64,
@@ -97,10 +104,12 @@ class NativeFixture(http.server.BaseHTTPRequestHandler):
 def complete_fixture(attempt, slot):
     started = time.monotonic()
     body = json.dumps(attempt["request"]).encode()
+    chat = attempt["request"]["model"].startswith("self-hosted/")
+    endpoint = "/v1/chat/completions" if chat else "/v1/messages"
     received = bytearray()
     with socket.create_connection(("127.0.0.1", provider.server_port), timeout=3) as stream:
         headers = (
-            f"POST /v1/messages HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
+            f"POST {endpoint} HTTP/1.0\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n"
             f"X-Coworld-Player-Slot: {slot}\r\nContent-Length: {len(body)}\r\n\r\n"
         ).encode()
         stream.sendall(headers + body)
@@ -113,7 +122,7 @@ def complete_fixture(attempt, slot):
     served = json.loads(raw_body)
     attempt.update(
         {
-            "response": served["content"][0]["text"],
+            "response": served["choices"][0]["message"]["content"] if chat else served["content"][0]["text"],
             "model": served["model"],
             "raw_response": raw_body.decode(),
             "response_body_b64": base64.b64encode(raw_body).decode(),
@@ -124,7 +133,7 @@ def complete_fixture(attempt, slot):
             "response_reader_joined": True,
             "platform_call_id": header_map["X-Softmax-Llm-Call-Id"],
             "latency_ms": (time.monotonic() - started) * 1000,
-            "stop_reason": served["stop_reason"],
+            "stop_reason": served["choices"][0]["finish_reason"] if chat else served["stop_reason"],
         }
     )
     if "sampling_evidence" in served:
@@ -212,6 +221,10 @@ async def player(slot, port, origin):
                         "system": packet["messages"][0]["content"],
                         "messages": [packet["messages"][1]],
                     }
+                    if origin == "model-private-chat":
+                        request["model"] = "self-hosted/fixture-requested"
+                        request["messages"] = packet["messages"]
+                        del request["system"]
                     evidence.update(
                         {
                             "request": request,
@@ -254,6 +267,7 @@ async def player(slot, port, origin):
                         "model-mismatch",
                         "model-chronology",
                         "model-large-sampled",
+                        "model-private-chat",
                     }:
                         await connection.send(
                             json.dumps(
@@ -332,6 +346,7 @@ try:
                 "model-false-start",
                 "model-chronology",
                 "model-large-sampled",
+                "model-private-chat",
                 "model-omitted-join",
             )
             if variant == "standard"
@@ -407,7 +422,7 @@ try:
                                 assert model["origin"] == "model" and model["response_reader_joined"] is None
                                 assert not model["accepted"] and unknown["origin"] == "unknown"
                                 assert decision["selected_attempt_id"] == unknown["attempt_id"]
-                            elif origin in {"model-chronology", "model-large-sampled"}:
+                            elif origin in {"model-chronology", "model-large-sampled", "model-private-chat"}:
                                 (attempt,) = decision["attempts"]
                                 assert decision["selected_attempt_id"] == attempt["attempt_id"]
                                 assert attempt["accepted"] and attempt["origin"] == "model"

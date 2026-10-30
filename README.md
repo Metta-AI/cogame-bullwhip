@@ -96,6 +96,18 @@ Hosted model calls use the platform-provided `COWORLD_LLM_ENDPOINT` sidecar.
 is finite and in [0, 1]. Native calls consume one configured weekly deadline.
 Without an endpoint, the engine uses its explicit base-stock fallback.
 
+Private `self-hosted/...` models use the sidecar's Chat Completions endpoint;
+public models use Messages. Both paths preserve the same system/user prompts,
+seat attribution, temperature and output limit. Private replies retain their
+original Chat body, usage counts and finish reason, including `length`.
+The game also checks externally controlled Chat attempts against those exact
+prompts and the text in their received response body.
+
+`hostedModel` selects a game-owned operator route. Registering a player's BYO
+endpoint does not redirect the game's calls; a contributor using that endpoint
+must run its own external-control player. Endpoint availability and hosted
+receipt authority remain platform requirements.
+
 For scripted baselines, pass `--secret-env PLAYER_SCRIPTED=basestock` or
 `--secret-env PLAYER_SCRIPTED=mirror` to the same policy upload command.
 
