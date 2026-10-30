@@ -74,6 +74,15 @@ Historical corpora keep their original source and split provenance.
 
 # Numeric reinforcement learning
 
+The JSONL bridge also accepts explicit teacher queries such as
+`{"kind":"teacher","policy":"mirror"}`. Policies are `basestock`, `mirror`
+(order the seat-visible incoming demand), and `zero` (order zero). Explicit
+replies include `response`, `policy`, and `decision_id`; queries without a policy
+retain their original response shape and basestock behavior. Invalid selectors
+return an error without advancing the decision or consuming an action retry.
+Only the seat's private observation is used. These are scripted references for
+teacher-diversity studies; their relative native performance must be measured.
+
 Compile the persistent bridge and pass its manifest to Metta's
 `recipes.external.coworld.train` (native PufferLib) or
 `recipes.external.coworld_metta_rl.train` (Metta RL):

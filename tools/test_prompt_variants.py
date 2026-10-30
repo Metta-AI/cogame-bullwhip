@@ -2,11 +2,10 @@
 
 import hashlib
 import json
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
-
+from pathlib import Path
 
 binary = Path(sys.argv[1]).resolve()
 manifest = Path(__file__).resolve().parents[1] / "coworld_manifest_template.json"
@@ -33,7 +32,7 @@ for talk in (True, False):
         text=True,
     )
 
-    def request(value):
+    def request(value, process=process):
         process.stdin.write(json.dumps(value) + "\n")
         process.stdin.flush()
         line = process.stdout.readline()
@@ -157,6 +156,7 @@ for talk in (True, False):
     ):
         result = subprocess.run(
             [str(binary), str(variant_manifest), "--language"],
+            check=False,
             input=json.dumps(
                 {"kind": "reset", "seed": "rejected", "players": 4} | configuration
             )
